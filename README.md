@@ -47,7 +47,8 @@ evidence. The short version of what this library does differently:
 | `Conn` — low-level framing | landed |
 | `internal/demux` — correlation state machine ([design note](docs/demux.md)) | landed |
 | `Client` — session, correlation, keepalive | landed |
-| `amitest` — public fake AMI server | next up |
+| `amitest` — public fake AMI server | landed |
+| `examples/` — runnable usage patterns | next up |
 
 ## Requirements
 

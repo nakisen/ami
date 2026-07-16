@@ -502,3 +502,79 @@ worker, the public handles (`Do`/`DoResult`/`WithFollow`, `StartList`/
   Terminal causes are logged by sanitized class only — this package's
   own error texts, or `"transport error"` for anything that could
   carry endpoints.
+
+## 2026-07-17 — `amitest` public fake server
+
+`amitest` landed as the adoption feature design.md scoped: a
+programmatic fake AMI server on a real loopback socket, so consumer
+tests run the real `Dial` path without a PBX. Decisions:
+
+- **Scenarios are a handler registry plus reply primitives, not a
+  frame script.** `NewServer(Config)` returns a listening server
+  (panicking when loopback cannot bind, the httptest convention);
+  `HandleAction` registers per-action handlers under case-insensitive
+  names, and a handler's `Call` carries the received action —
+  ordered-field accessors with the envelope split off — plus
+  `Respond`, correlated `Event` (both echo the ActionID
+  automatically), `RespondLegacyCommand`, `Raw`, and `Hangup`.
+  Uncorrelated traffic is injected through `Server.Event`/`Raw`
+  broadcasts at any time, and a `Call` stays valid after its handler
+  returns, so delayed and out-of-order replies are scripted with plain
+  goroutines and channels. No text script format exists, reaffirming
+  the earlier v0 decision.
+- **Built-in behavior is exactly what every session needs, and
+  deterministic.** The banner, both login schemes (plain secret and
+  MD5 challenge with a fixed challenge string — the fake is not a
+  security boundary, and a fixed nonce keeps scenarios reproducible),
+  and default Ping/Logoff handlers that answer like Asterisk so
+  keepalives and shutdown flows work unscripted; each default is
+  removable through `HandleAction(name, nil)`. Nothing else is ever
+  sent spontaneously — no `FullyBooted`, no periodic events —
+  because a scenario must observe exactly the traffic it scripted.
+  Broadcasts skip unauthenticated sessions, preserving the login
+  invariant the client's synchronous pre-loop exchange relies on.
+- **Strictness records and responds.** An action with no handler gets
+  an `Error` response — the consumer's pending `Do` resolves loudly
+  instead of hanging — and the violation is recorded; `Err()` returns
+  the joined violations and `Close()` returns the same value, so one
+  `Close` check ends a strict test. Violations are unhandled actions,
+  actions before authentication, frames without an `Action` field,
+  and wire-protocol violations; a rejected login and an abruptly
+  discarded connection are legitimate scenario traffic, not
+  violations.
+- **The import boundary keeps the dogfooding path open.** `amitest`
+  imports `internal/wire` — the same bounded parser and encoder the
+  client uses — and never the root package, so the root package's
+  in-package tests can later migrate onto `amitest` without an import
+  cycle. Its own test suite already dogfoods in the other direction:
+  the real client over real TCP covers both login schemes, list
+  flows, the wallboard snapshot-plus-live interleave, legacy and
+  modern command output, malformed frames terminating the client,
+  hangup/reconnect, TLS, fragmented writes, and keepalive pings
+  served by the built-in handler.
+- **Outbound frames are validated against client-shaped ceilings.**
+  The encoder's action dimensions are repurposed with the client's
+  inbound defaults (1024 fields, 32 KiB lines, 128 KiB messages),
+  because the fake's outbound frames are server messages, bounded by
+  what a client accepts rather than what the Asterisk action parser
+  does. Builder misuse — odd key/value counts, empty names, header
+  injection, oversized frames — panics: scenario scripts are test
+  code, and a malformed script is a bug to surface at its call site.
+- **Legacy command frames are composed as raw bytes**, per the wire
+  slice's round-trip exception. The payload is written verbatim, so a
+  trailing newline yields the terminator on its own line and its
+  absence yields the glued terminator a real CLI command without a
+  final newline produces — both scriptable through one primitive.
+- **Real sockets, no `synctest`.** A TCP write completing does not
+  mean the client consumed it, so scenarios synchronize through
+  protocol barriers — a session's writes and the client's routing are
+  both ordered, so a blocking receive or a Ping round-trip proves
+  everything earlier was routed — and `testing/synctest` bubbles
+  cannot host real-socket tests by design. Write errors to sessions
+  that died mid-scenario are discarded; the client under test observes
+  the death on its own side.
+- **`LocalhostTLS` generates a throwaway self-signed pair at
+  runtime** — server and client `tls.Config` covering localhost and
+  the loopback addresses for 24 hours — so TLS scenarios are one line
+  and no certificate fixture with an embedded expiry can rot in the
+  repository.
