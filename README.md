@@ -44,8 +44,8 @@ evidence. The short version of what this library does differently:
 |---|---|
 | Design ([docs/design.md](docs/design.md)) | decided direction recorded |
 | `internal/wire` — parser, encoder, fuzz corpus | landed |
-| `Conn` — low-level framing | next up |
-| `Client` — session, correlation, keepalive | planned |
+| `Conn` — low-level framing | landed |
+| `Client` — session, correlation, keepalive | next up |
 | `amitest` — public fake AMI server | planned |
 
 ## Requirements

@@ -7,8 +7,8 @@ import "errors"
 // the sentinels rather than replace them. Sentinel text is stable and
 // never embeds remote or connection-specific data.
 var (
-	// ErrClosed reports that the client, subscription, or list was
-	// closed locally before or during the operation.
+	// ErrClosed reports that the connection, client, subscription, or
+	// list was closed locally before or during the operation.
 	ErrClosed = errors.New("ami: closed")
 
 	// ErrLagged reports that a subscription overflowed its bounded
@@ -49,3 +49,32 @@ var (
 	// correlated traffic.
 	ErrRetirementExpired = errors.New("ami: retirement expired")
 )
+
+// A ProtocolError reports a violation of the AMI wire protocol or of a
+// configured wire limit. Its Error text is stable and sanitized: it
+// carries the violation's category and dimension and never embeds raw
+// remote content. An inbound ProtocolError means the connection has been
+// closed, because framing beyond the violation cannot be trusted; a
+// ProtocolError from outbound validation is reported before any byte is
+// written and leaves the connection usable.
+type ProtocolError struct {
+	// Category classifies the violation: "limit" for a WireLimits
+	// breach, "framing" for a malformed inbound frame, or "envelope" for
+	// an invalid outbound action envelope.
+	Category string
+
+	// Dimension identifies what was violated: the WireLimits field name
+	// for limit violations, otherwise a short fixed description.
+	Dimension string
+
+	cause error
+}
+
+func (e *ProtocolError) Error() string {
+	return "ami: protocol violation: " + e.Category + ": " + e.Dimension
+}
+
+// Unwrap returns the underlying cause, if any, for use with errors.Is.
+func (e *ProtocolError) Unwrap() error {
+	return e.cause
+}

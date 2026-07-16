@@ -448,6 +448,39 @@ func TestReadMessageLimits(t *testing.T) {
 	}
 }
 
+func TestReaderDirty(t *testing.T) {
+	r := newTestReader("Event: X\r\n\r\nEvent: Y\r\nPartial", testLimits())
+	if r.Dirty() {
+		t.Fatal("fresh reader reports dirty")
+	}
+	if _, err := r.ReadMessage(); err != nil {
+		t.Fatalf("first message: %v", err)
+	}
+	if r.Dirty() {
+		t.Fatal("dirty after a completely returned message")
+	}
+	if _, err := r.ReadMessage(); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("truncated message: err = %v, want io.ErrUnexpectedEOF", err)
+	}
+	if !r.Dirty() {
+		t.Fatal("clean after consuming part of an unreturned frame")
+	}
+
+	empty := newTestReader("", testLimits())
+	if _, err := empty.ReadMessage(); err != io.EOF || empty.Dirty() {
+		t.Fatalf("empty stream: err = %v, dirty = %v, want io.EOF and clean", err, empty.Dirty())
+	}
+
+	partialBanner := newTestReader("Asterisk Call", testLimits())
+	if _, err := partialBanner.ReadBanner(); !errors.Is(err, io.ErrUnexpectedEOF) || !partialBanner.Dirty() {
+		t.Fatalf("partial banner: err = %v, dirty = %v, want io.ErrUnexpectedEOF and dirty", err, partialBanner.Dirty())
+	}
+	fullBanner := newTestReader("Asterisk Call Manager/2.10.6\r\n", testLimits())
+	if _, err := fullBanner.ReadBanner(); err != nil || fullBanner.Dirty() {
+		t.Fatalf("complete banner: err = %v, dirty = %v, want nil and clean", err, fullBanner.Dirty())
+	}
+}
+
 func TestLimitsValidate(t *testing.T) {
 	if err := testLimits().Validate(); err != nil {
 		t.Fatalf("Validate() on positive limits = %v", err)

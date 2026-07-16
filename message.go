@@ -4,6 +4,8 @@ import (
 	"iter"
 	"slices"
 	"strings"
+
+	"github.com/nakisen/ami/internal/wire"
 )
 
 // A Field is one key/value pair of an AMI message. AMI messages are
@@ -33,6 +35,21 @@ func newMessage(fields []Field) Message {
 		return Message{}
 	}
 	return Message{fields: slices.Clone(fields)}
+}
+
+// messageFromWire adopts fields parsed by internal/wire, converting them
+// into the package's own Field type with the single copy the immutable
+// Message requires. internal/wire never imports this package; the type
+// conversion happens here, at the boundary.
+func messageFromWire(fields []wire.Field) Message {
+	if len(fields) == 0 {
+		return Message{}
+	}
+	fs := make([]Field, len(fields))
+	for i, f := range fields {
+		fs[i] = Field(f)
+	}
+	return Message{fields: fs}
 }
 
 // Get returns the value of the first field whose key equals key under

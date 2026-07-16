@@ -124,6 +124,48 @@ Asterisk. The survey's key evidence is kept under "Prior art" below.
   documented round-trip exception — so synthesizing a legacy frame
   requires raw writes by design; `amitest` will compose such frames as
   raw bytes.
+- `Conn` (landed 2026-07-16). Context cancellation is implemented by
+  poking a past deadline into the owned `net.Conn` through
+  `context.AfterFunc`; the watcher's release clears the poked deadline
+  before the outcome is classified, so an operation that completed
+  despite a racing cancellation leaves the connection usable. The error
+  contract is mechanical: a returned context error means the operation
+  was abandoned cleanly (no byte of the pending inbound frame consumed —
+  `wire.Reader` gained `Dirty()` to attest this — or zero action bytes
+  written) and the connection remains usable; every other error means
+  the connection closed, with transport errors passed through verbatim
+  (never re-wrapped, honoring the no-cause-text rule), wire violations
+  mapped to `ProtocolError{Category, Dimension}`, and a cancellation
+  that interrupted a partially transferred frame surfacing as the
+  transport's deadline error, deliberately not as a context error. This
+  refines the "after a write has begun" clause: a cancellation that
+  provably wrote zero bytes is classified as clean because no frame
+  byte was emitted. Outbound validation `ProtocolError`s are returned
+  before any byte is written and leave the connection usable.
+  Operations on a closed connection return `ErrClosed`.
+- `WriteAction` composes the frame as the `Action` field first, the
+  `ActionID` field second when the caller-owned ActionID is non-empty —
+  an empty ActionID omits the field entirely — then the action's extra
+  fields in wire order. `NewAction` validates shape and injection
+  (empty name, CR/LF anywhere, colon in keys, reserved `Action`/
+  `ActionID` keys) and defensively copies its fields; size limits remain
+  `WriteAction`'s job against the connection's `WireLimits`.
+- Newly anchored limit defaults (verified 2026-07-16 against the
+  Asterisk master and 18 branches — `manager.h` `AST_MAX_MANHEADERS`,
+  `manager.c` `inbuf`/`get_input`/`do_message`): outbound action fields
+  128, matching `AST_MAX_MANHEADERS` — the server rejects an action
+  with more lines ("Too many lines in message"); outbound line 1022
+  content bytes, because the server scans for the terminator within a
+  1024-byte window and discards longer lines, so 1022 plus CRLF fills
+  that window exactly; outbound action bytes 128 KiB, the server's
+  aggregate ceiling of 128 maximal lines and symmetric with the inbound
+  message anchor. Headroom-policy inbound anchors: fields per message
+  1024 (an order of magnitude above the largest real events), Command
+  output 65536 lines / 8 MiB (large `dialplan show`-class dumps,
+  proportionate to the 32 MiB client-wide cap). Partial-frame age
+  remains open (question 1) and is not enforced by `Conn`; its
+  ctx-bounded operations give a synchronous owner full deadline control
+  in the meantime.
 
 ## Goals
 
@@ -690,7 +732,12 @@ retained state or wire I/O is committed. Required dimensions include:
 Initial v0 anchors for the core inbound and queue dimensions: banner 1 KiB
 (the pre-authentication read is deliberately the tightest limit), inbound
 line 32 KiB, inbound message 128 KiB, per-subscription queue 512 events /
-2 MiB, client-wide retained subscription bytes 32 MiB.
+2 MiB, client-wide retained subscription bytes 32 MiB. The wire
+dimensions anchored with `Conn` (see the 2026-07-16 decisions): inbound
+fields per message 1024, Command output 65536 lines / 8 MiB, outbound
+action fields 128 (`AST_MAX_MANHEADERS`), outbound line 1022 content
+bytes (the server's 1024-byte input window minus CRLF), outbound action
+bytes 128 KiB.
 Post-authentication byte/count ceilings follow a headroom-over-strictness
 policy — they are ceilings, not allocations, so generosity costs memory
 only under attack or pathology — while time-based dimensions are exempt
@@ -1015,13 +1062,13 @@ enabled defaults.
 
 ## Open questions
 
-1. Exact safe defaults for the dimensions not yet anchored: Command output
-   lines/bytes, outbound field/line/action bytes, writer admission and
-   write-attempt durations, public pending count, per-list and aggregate
-   list bytes, matcher names/bytes, partial-frame age, and
-   retirement/abandoned-drain counts and lifetimes. (Keepalive timings and
-   the core inbound/queue anchors are decided; see the 2026-07-16
-   decisions.)
+1. Exact safe defaults for the dimensions not yet anchored: writer
+   admission and write-attempt durations, public pending count, per-list
+   and aggregate list bytes, matcher names/bytes, partial-frame age (and
+   its enforcement point, expected to be the session read loop), and
+   retirement/abandoned-drain counts and lifetimes. (Keepalive timings,
+   the core inbound/queue anchors, and — since `Conn` landed — every
+   wire dimension are decided; see the 2026-07-16 decisions.)
 2. `amix` license/attribution and provenance: acceptable Asterisk XML
    source license, exact release/commit/checksum, generated-derivative
    obligations, reproducible offline generation, initial typed surface,

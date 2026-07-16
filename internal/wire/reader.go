@@ -15,9 +15,10 @@ var endCommand = []byte("--END COMMAND--")
 // layer owns exactly one Reader per connection and enforces read
 // deadlines on the underlying stream.
 type Reader struct {
-	br  *bufio.Reader
-	lim Limits
-	buf []byte // line accumulation buffer, reused across reads
+	br    *bufio.Reader
+	lim   Limits
+	buf   []byte // line accumulation buffer, reused across reads
+	dirty bool   // bytes of an unreturned frame have been consumed
 }
 
 // NewReader returns a Reader parsing from r under lim. The caller is
@@ -25,6 +26,14 @@ type Reader struct {
 func NewReader(r io.Reader, lim Limits) *Reader {
 	return &Reader{br: bufio.NewReader(r), lim: lim}
 }
+
+// Dirty reports whether bytes of an unreturned banner or message have
+// been consumed from the stream. After a read fails, a false Dirty means
+// no byte of the frame was consumed — an interruption at that point (for
+// example a poked read deadline) leaves the stream intact and a later
+// read can resume cleanly. A true Dirty after a failure means the frame
+// is partially consumed and framing cannot be resumed.
+func (r *Reader) Dirty() bool { return r.dirty }
 
 // ReadBanner reads the protocol banner line the server sends before its
 // first message and returns the line content without its terminator. The
@@ -36,6 +45,7 @@ func (r *Reader) ReadBanner() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	r.dirty = false
 	return string(line), nil
 }
 
@@ -72,6 +82,7 @@ func (r *Reader) ReadMessage() ([]Field, error) {
 			if err := charge(&m.msgBytes, raw, r.lim.MaxMessageBytes, ErrMessageTooLarge); err != nil {
 				return nil, err
 			}
+			r.dirty = false
 			return m.fields, nil
 		}
 		key, value, err := splitField(line)
@@ -136,6 +147,7 @@ func (r *Reader) readLegacyCommand(m *msg) ([]Field, error) {
 		if err := charge(&m.msgBytes, raw, r.lim.MaxMessageBytes, ErrMessageTooLarge); err != nil {
 			return nil, err
 		}
+		r.dirty = false
 		return m.fields, nil
 	}
 }
@@ -151,6 +163,9 @@ func (r *Reader) readLine(max int, errTooLong error) ([]byte, int, error) {
 	r.buf = r.buf[:0]
 	for {
 		frag, err := r.br.ReadSlice('\n')
+		if len(frag) > 0 {
+			r.dirty = true
+		}
 		r.buf = append(r.buf, frag...)
 		if err == bufio.ErrBufferFull {
 			// No terminator yet: bound the accumulation before reading
