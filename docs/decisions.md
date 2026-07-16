@@ -227,3 +227,21 @@ behavior against Asterisk. The survey's key evidence is kept under
   visible here (pending count, matcher dimensions, list dimensions,
   retirement count/lifetime) stay in open question 1 for the `Client`
   slice, which also delivers the busy-system queue-sizing guide.
+
+## 2026-07-16 — v0 ergonomics: `Consume` and `Event.Name`
+
+- The blocking `Consume(ctx, handler)` adapter moves from the v0.1
+  target into v0, ratified after a UX review of hook-style consumption.
+  Its contract is pinned All-consistent: the handler runs serially on
+  the caller's goroutine (off the read loop, so it may call `Do`), a
+  non-nil handler error stops consumption and is returned, the adapter
+  is single-use with concurrent consumers rejected, and once
+  consumption begins every exit path closes the underlying subscription
+  exactly once. Rationale: it is the first surface newcomers look for,
+  it is a few lines over `Next`, and packaging it removes the
+  temptation to build an unsafe callback registry above the library.
+- `Event.Name()` is added: the classifying event name (the `Event`
+  field's value), always non-empty on a classified event — the single
+  most-typed accessor in any consumer, made typo-proof.
+- The remaining proposals from the same review (`MustAction`,
+  `MatchAll`, a `slog` diagnostics hook) stay undecided.

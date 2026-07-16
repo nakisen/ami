@@ -125,7 +125,9 @@ implementation; the key evidence is kept here as rationale anchors.
 - `Action`, `Response`, and `Event` are validated immutable views over the
   common field representation. A message containing `Event:` is classified
   as an event even when it also carries an event-specific `Response:`
-  field, as `OriginateResponse` does.
+  field, as `OriginateResponse` does. `Event.Name()` exposes the
+  classifying event name — the `Event` field's value, always non-empty on
+  a classified event — directly.
 - Conflicting duplicate envelope fields or ActionIDs are rejected.
   Package-level action construction rejects CR/LF injection, malformed
   keys, and reserved `Action`/`ActionID` fields. Client-configured
@@ -328,9 +330,15 @@ aggregate limits, registers eagerly, and returns
   ends iteration without yielding an error — `io.EOF` is never yielded —
   and a terminal failure yields exactly one final (zero `Event`, error)
   pair before stopping.
-- A blocking `Consume(ctx, handler)` adapter is targeted at v0.1: it calls
-  a handler serially on the caller's goroutine and must not create a
-  hidden goroutine. An asynchronous `OnEvent` registry is not in v0.
+- The blocking `Consume(ctx, handler)` adapter is part of v0 (promoted
+  from the v0.1 target on 2026-07-16). It calls the handler serially on
+  the caller's goroutine and creates no hidden goroutine, so the handler
+  runs off the read loop and may safely call `Do`. A non-nil handler
+  error stops consumption and is returned. The adapter is single-use and
+  rejects a second or concurrent consumer; like `All`, once consumption
+  begins every exit path closes the underlying subscription exactly
+  once. Terminal semantics otherwise mirror `Next`. An asynchronous
+  `OnEvent` registry is not in v0.
 - Ordinary subscription filters are declarative event-name data
   (`MatchEvents` and bounded combinations). ActionID-specific follow and
   list routing is established atomically through `FollowSpec` and
@@ -811,10 +819,10 @@ as the first-contact snippet:
 - **Async completion:** request an ActionID-specific follow subscription
   as part of `Do`; the client installs it before writing. The caller never
   manufactures an ActionID or races a separate subscription against send.
-- **Hook-style handling:** iterate `Subscription.Next`/`All` or call a
-  blocking consumer-owned handler loop. The handler runs outside the read
-  loop and may safely call `Do`; hidden callback goroutines are not part
-  of v0.
+- **Hook-style handling:** iterate `Subscription.Next`/`All` or run the
+  packaged blocking loop `Consume(ctx, handler)`. The handler runs outside
+  the read loop and may safely call `Do`; hidden callback goroutines are
+  not part of v0.
 
 ## API sketch (signatures only)
 
@@ -832,6 +840,8 @@ func (m Message) Get(key string) string
 func (m Message) Lookup(key string) (string, bool)
 func (m Message) Values(key string) []string
 func (m Message) Fields() iter.Seq2[string, string]
+
+func (e Event) Name() string
 
 func Dial(ctx context.Context, cfg Config) (*Client, error)
 
@@ -884,6 +894,7 @@ func Buffer(items int) SubOption
 
 func (s *Subscription) Next(ctx context.Context) (Event, error)
 func (s *Subscription) All(ctx context.Context) iter.Seq2[Event, error]
+func (s *Subscription) Consume(ctx context.Context, handler func(Event) error) error
 func (s *Subscription) Done() <-chan struct{}
 func (s *Subscription) Err() error
 func (s *Subscription) Close() error
