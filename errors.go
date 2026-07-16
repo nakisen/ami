@@ -59,8 +59,10 @@ var (
 // written and leaves the connection usable.
 type ProtocolError struct {
 	// Category classifies the violation: "limit" for a WireLimits
-	// breach, "framing" for a malformed inbound frame, or "envelope" for
-	// an invalid outbound action envelope.
+	// breach, "framing" for a malformed inbound frame, "envelope" for an
+	// invalid outbound action envelope or an unclassifiable inbound
+	// message, or "correlation" for a response the session cannot
+	// attribute to any request.
 	Category string
 
 	// Dimension identifies what was violated: the WireLimits field name
@@ -77,4 +79,211 @@ func (e *ProtocolError) Error() string {
 // Unwrap returns the underlying cause, if any, for use with errors.Is.
 func (e *ProtocolError) Unwrap() error {
 	return e.cause
+}
+
+// A RequestPhase locates where an action dispatch failed.
+type RequestPhase uint8
+
+const (
+	// PhaseAdmission: waiting for write ownership or a correlation
+	// reservation. Nothing was written; the action was definitely not
+	// sent.
+	PhaseAdmission RequestPhase = 1 + iota
+
+	// PhaseWrite: during the action write. Whether the action was sent
+	// depends on how the write failed; MayHaveExecuted distinguishes.
+	PhaseWrite
+
+	// PhaseResponse: the complete action was written and the request
+	// ended — by context or client death — before a response won. The
+	// server may have executed the action.
+	PhaseResponse
+)
+
+// String returns the stable phase name.
+func (p RequestPhase) String() string {
+	switch p {
+	case PhaseAdmission:
+		return "admission"
+	case PhaseWrite:
+		return "write"
+	case PhaseResponse:
+		return "awaiting response"
+	}
+	return "unknown"
+}
+
+// A RequestError reports a failed action dispatch: where it failed,
+// whether the server may have executed the action anyway, and the
+// underlying cause through Unwrap. Its Error text is stable and never
+// embeds the cause's text.
+//
+// errors.Is(err, ErrOutcomeUnknown) is true exactly when
+// MayHaveExecuted is true.
+type RequestError struct {
+	// Phase locates the failure in the dispatch pipeline.
+	Phase RequestPhase
+
+	// ActionID is the client-assigned correlation ID, when one was
+	// assigned before the failure. It is opaque; callers must not parse
+	// it.
+	ActionID string
+
+	mayHaveExecuted bool
+	cause           error
+}
+
+func (e *RequestError) Error() string {
+	s := "ami: request failed: " + e.Phase.String()
+	if e.mayHaveExecuted {
+		s += " (outcome unknown)"
+	}
+	return s
+}
+
+// MayHaveExecuted reports whether at least one action byte may have
+// reached the server without proof of the complete exchange: the server
+// may have executed the action, and the application must reconcile
+// externally instead of retrying blindly.
+func (e *RequestError) MayHaveExecuted() bool {
+	return e.mayHaveExecuted
+}
+
+// Unwrap returns the underlying cause: the context error, transport
+// error, or client root cause that ended the request.
+func (e *RequestError) Unwrap() error {
+	return e.cause
+}
+
+// Is reports ErrOutcomeUnknown exactly when MayHaveExecuted is true,
+// alongside the causes exposed through Unwrap.
+func (e *RequestError) Is(target error) bool {
+	return target == ErrOutcomeUnknown && e.mayHaveExecuted
+}
+
+// A ResponseError reports that the server answered an action with an
+// error response. Its Error text is stable and never embeds the remote
+// Message field; the raw response is available — explicitly, as
+// untrusted data — through Response.
+type ResponseError struct {
+	resp Response
+}
+
+func (e *ResponseError) Error() string {
+	return "ami: server returned an error response"
+}
+
+// Response returns the raw error response. Its fields are untrusted
+// remote data; the application must classify and redact them before
+// logging or acting on them.
+func (e *ResponseError) Response() Response {
+	return e.resp
+}
+
+// A DialError reports where Dial failed: establishing the TCP
+// connection, the TLS handshake, reading the banner, or logging in. Its
+// Error text is stable and omits endpoint and cause text; Unwrap
+// exposes the underlying cause, which the application must classify and
+// redact before logging.
+type DialError struct {
+	// Phase is "dial", "tls", "banner", or "login".
+	Phase string
+
+	cause error
+}
+
+func (e *DialError) Error() string {
+	return "ami: dial failed: " + e.Phase
+}
+
+// Unwrap returns the underlying cause. A login rejection unwraps to
+// ErrLoginFailed.
+func (e *DialError) Unwrap() error {
+	return e.cause
+}
+
+// A KeepaliveError reports why the keepalive terminated the client. Its
+// Error text is stable; timeout phases unwrap to ErrPingWriteTimeout or
+// ErrPingTimeout.
+type KeepaliveError struct {
+	// Phase is "write" (the due Ping could not be admitted and fully
+	// written in time), "response" (the written Ping's response missed
+	// its deadline), or "rejected" (the server answered the Ping with an
+	// error or malformed response).
+	Phase string
+
+	cause error
+}
+
+func (e *KeepaliveError) Error() string {
+	return "ami: keepalive failed: " + e.Phase
+}
+
+// Unwrap returns the wrapped sentinel: ErrPingWriteTimeout for the
+// write phase, ErrPingTimeout for the response phase, nil for a
+// rejection.
+func (e *KeepaliveError) Unwrap() error {
+	return e.cause
+}
+
+// A ListFailure classifies a terminal list failure.
+type ListFailure uint8
+
+const (
+	// ListCancelled: the server terminated the list with
+	// EventList: cancelled.
+	ListCancelled ListFailure = 1 + iota
+
+	// ListOverflowed: the list exceeded its queued items/bytes caps or
+	// its total observed-bytes budget.
+	ListOverflowed
+
+	// ListCountMismatch: the completion event declared a count that did
+	// not match the observed items.
+	ListCountMismatch
+)
+
+// String returns the stable failure name.
+func (f ListFailure) String() string {
+	switch f {
+	case ListCancelled:
+		return "cancelled"
+	case ListOverflowed:
+		return "overflowed"
+	case ListCountMismatch:
+		return "count mismatch"
+	}
+	return "unknown"
+}
+
+// A ListError reports a terminal list failure: cancellation by the
+// server, overflow of the list's bounded state, or a declared-count
+// mismatch. Its Error text is stable and carries no remote data.
+type ListError struct {
+	// Failure classifies what terminated the list.
+	Failure ListFailure
+}
+
+func (e *ListError) Error() string {
+	return "ami: list failed: " + e.Failure.String()
+}
+
+// A RetirementError reports that an outcome-unknown retirement record
+// or an abandoned-list drain expired without observing its terminal
+// evidence. The client closes with this as its root cause rather than
+// risk misclassifying late correlated traffic. It matches
+// ErrRetirementExpired through errors.Is.
+type RetirementError struct {
+	// Kind is "request" for an outcome-unknown response retirement or
+	// "list" for an abandoned-list drain.
+	Kind string
+}
+
+func (e *RetirementError) Error() string {
+	return "ami: retirement expired: " + e.Kind + " record"
+}
+
+// Unwrap returns ErrRetirementExpired.
+func (e *RetirementError) Unwrap() error {
+	return ErrRetirementExpired
 }

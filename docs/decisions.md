@@ -425,3 +425,80 @@ plus a `wire.Reader` frame-start hook. Implementation decisions:
 - A frame delivered in one chunk parses out of the buffer without
   another stream read and never observes the deadline — which is also
   what makes the exact-boundary tests deterministic with a 1 ns age.
+
+## 2026-07-17 — `Client` session layer
+
+The session layer landed on top of `internal/demux`: `Dial` (TCP,
+optional TLS, banner, plain and explicit-MD5 login), the read loop as
+the machine's only router, the writer path, keepalive, the expiry
+worker, the public handles (`Do`/`DoResult`/`WithFollow`, `StartList`/
+`List`, `Subscribe`/`Subscription` with `Next`/`All`/`Consume`,
+`Event.Name`, `Config.Logger`), and the client lifecycle. Decisions:
+
+- **The `Do`/`StartList` error contract over the machine's
+  adopt/close primitives** (owed since the demux slice): a success
+  response adopts — `DoResult.Follow` or the returned `List`, either
+  possibly already terminal, which is honest ownership rather than an
+  error. An AMI error response returns `*ResponseError` (follow closed
+  by the session; a rejected list was already released machine-side).
+  A death completion returns an outcome-unknown `*RequestError`
+  wrapping the client root cause, with `CloseFollow`/`CloseList` as
+  tolerated post-death bookkeeping. A context end while awaiting the
+  response abandons the ticket into a retirement record. Write
+  failures split three ways: a clean context abandonment is
+  definitely-not-sent on a live connection; a zero-byte transport
+  failure is definitely-not-sent on a dead one; any written byte is
+  outcome-unknown. The written-byte distinction comes from a
+  package-internal `writeAction` returning the byte count — the public
+  `WriteAction` signature is unchanged.
+- **The reader defers to a poisoning writer for the root cause.** A
+  failed action write poisons the connection, which instantly unblocks
+  the read loop with `ErrClosed`; dying there would race the writer
+  and could commit a generic cause over the real transport error
+  (caught as a test flake). On `ErrClosed` with a live session context
+  the read loop now waits for the writer's `die` to commit the real
+  cause. Every poison path in the session ends in `die`, so the wait
+  always resolves.
+- **Machine effects are applied while holding the session lock.**
+  Completion sends go to single-use buffered channels and branch wakes
+  coalesce into capacity-one channels, so nothing under the lock can
+  block on a consumer — and lock-scope application is what linearizes
+  the response-versus-cancellation race into one winner.
+- **`demux` gained a read-only `Terminal` probe** so a wake can close
+  a handle's `Done` at its first terminal result without consuming
+  queued items — `Done` must fire without a consumer parked in `Next`.
+- **Teardown is machine-independent.** `die` runs the death cascade
+  with the kill guarded by recover, then sweeps the session-side
+  waiter and branch registries directly: even a machine wrecked by the
+  panic that killed the client cannot leave a waiter parked or a
+  `Done` unclosed.
+- **Writer admission is a capacity-one semaphore channel**, whose
+  FIFO wait queue is what "a due Ping cannot be passed by later public
+  writes" rests on; admission is additionally bounded by the caller's
+  context, the ratified `WriteAdmission` default, and client death.
+- **ActionIDs** are `crypto/rand.Text()` + `-` + a kind byte
+  (`r`/`l`) + a monotonic decimal suffix. An own-prefixed ID with a
+  mangled discriminator classifies as foreign: fatal as a response,
+  ordinary fan-out as an event.
+- **Envelope extraction pins the fail-closed reading**: a message with
+  neither `Event` nor `Response`, conflicting duplicate envelope
+  fields, or an empty event name classifies invalid and terminates the
+  client; response success is `Success` or `Follows` (the legacy
+  command frame), everything else — `Error`, `Goodbye`, arbitrary
+  text — is a rejection with the raw response available on
+  `ResponseError`.
+- **Login is a synchronous pre-loop exchange** on the fresh
+  connection: an unauthenticated manager session receives nothing
+  unsolicited, so each login action's response is the next message,
+  strictly matched by ActionID. The secret is used there and never
+  retained.
+- **The expiry worker** sleeps on the machine's earliest retirement
+  deadline, poked through a capacity-one channel by every call that
+  can create a record; with keepalive disabled it is the only thing
+  standing between a silent stream and an expired record, which is why
+  it is a dedicated worker rather than a read-loop side effect.
+- **Diagnostics run outside the lifecycle waitgroup**: `Done` promises
+  not to wait on caller code, and the `slog` handler is caller code.
+  Terminal causes are logged by sanitized class only — this package's
+  own error texts, or `"transport error"` for anything that could
+  carry endpoints.

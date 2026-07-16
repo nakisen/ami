@@ -46,8 +46,8 @@ evidence. The short version of what this library does differently:
 | `internal/wire` — parser, encoder, fuzz corpus | landed |
 | `Conn` — low-level framing | landed |
 | `internal/demux` — correlation state machine ([design note](docs/demux.md)) | landed |
-| `Client` — session, correlation, keepalive | next up |
-| `amitest` — public fake AMI server | planned |
+| `Client` — session, correlation, keepalive | landed |
+| `amitest` — public fake AMI server | next up |
 
 ## Requirements
 

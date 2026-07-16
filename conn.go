@@ -157,14 +157,23 @@ func (c *Conn) read(ctx context.Context, op func() error) error {
 // with zero bytes written. Once any byte may have been written, an error
 // closes the connection and the action's outcome is unknown.
 func (c *Conn) WriteAction(ctx context.Context, action Action, actionID string) error {
+	_, err := c.writeAction(ctx, action, actionID)
+	return err
+}
+
+// writeAction is WriteAction reporting the written byte count, which
+// the session layer needs for its outcome classification: an error with
+// zero bytes written is definitely-not-sent even when the connection
+// closed, while any written byte makes the outcome unknown.
+func (c *Conn) writeAction(ctx context.Context, action Action, actionID string) (int, error) {
 	if err := c.enter(ctx); err != nil {
-		return err
+		return 0, err
 	}
 	if action.name == "" {
-		return &ProtocolError{Category: "envelope", Dimension: "empty action name"}
+		return 0, &ProtocolError{Category: "envelope", Dimension: "empty action name"}
 	}
 	if strings.ContainsAny(actionID, "\r\n") {
-		return &ProtocolError{Category: "envelope", Dimension: "action id"}
+		return 0, &ProtocolError{Category: "envelope", Dimension: "action id"}
 	}
 	fields := make([]wire.Field, 0, len(action.fields)+2)
 	fields = append(fields, wire.Field{Key: "Action", Value: action.name})
@@ -176,7 +185,7 @@ func (c *Conn) WriteAction(ctx context.Context, action Action, actionID string) 
 	}
 	buf, err := wire.AppendMessage(c.wbuf[:0], fields, c.lim)
 	if err != nil {
-		return wireError(err)
+		return 0, wireError(err)
 	}
 	c.wbuf = buf
 
@@ -184,16 +193,16 @@ func (c *Conn) WriteAction(ctx context.Context, action Action, actionID string) 
 	n, err := c.conn.Write(buf)
 	interrupted := release()
 	if err == nil {
-		return nil
+		return n, nil
 	}
 	if c.isClosed() {
-		return ErrClosed
+		return n, ErrClosed
 	}
 	if interrupted && n == 0 && errors.Is(err, os.ErrDeadlineExceeded) {
-		return ctx.Err()
+		return 0, ctx.Err()
 	}
 	c.poison()
-	return err
+	return n, err
 }
 
 // Close closes the connection. It is idempotent, immediate, and safe to

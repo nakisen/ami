@@ -229,6 +229,40 @@ func (m *Machine[T]) Take(id BranchID) (T, TakeResult) {
 	return zero, TakeResult{}
 }
 
+// Terminal reports whether a branch has committed a terminal result and
+// by what reason, without consuming queued items: ReasonNone with true
+// is a clean terminal whose queue still drains to end-of-stream. The
+// session probes it when applying a wake so a handle's Done can close
+// without a consumer. An unknown (already closed) branch reports a
+// committed ReasonClosed terminal.
+func (m *Machine[T]) Terminal(id BranchID) (Reason, bool) {
+	if s := m.subByID[id.n]; s != nil {
+		if s.phase == bActive {
+			return ReasonNone, false
+		}
+		return s.reason, true
+	}
+	if f := m.folByID[id.n]; f != nil {
+		switch f.phase {
+		case bActive:
+			return ReasonNone, false
+		case bDraining:
+			return ReasonNone, true
+		}
+		return f.reason, true
+	}
+	if l := m.listByID[id.n]; l != nil {
+		switch l.phase {
+		case lDraining:
+			return ReasonNone, true
+		case lDead:
+			return l.reason, true
+		}
+		return ReasonNone, false
+	}
+	return ReasonClosed, true
+}
+
 // ListCompletion exposes a list's stored terminal completion event
 // after clean completion.
 func (m *Machine[T]) ListCompletion(id BranchID) (T, bool) {

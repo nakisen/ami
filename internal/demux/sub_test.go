@@ -185,3 +185,31 @@ func TestCloseAfterTerminalReleasesEntry(t *testing.T) {
 		t.Fatalf("%d subscription entries retained after terminal Close", subs)
 	}
 }
+
+func TestTerminalProbe(t *testing.T) {
+	m := New[int](testLimits())
+	if reason, terminal := m.Terminal(BranchID{}); !terminal || reason != ReasonClosed {
+		t.Fatalf("Terminal(unknown) = (%v, %v), want committed ReasonClosed", reason, terminal)
+	}
+	id, err := m.Subscribe(Matcher{}, Caps{Items: 1, Bytes: 1 << 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, terminal := m.Terminal(id); terminal {
+		t.Fatal("active subscription probed terminal")
+	}
+	// Overflow commits the lag terminal without consuming the queue.
+	m.Route(ev("a"), 1)
+	m.Route(ev("b"), 2)
+	if reason, terminal := m.Terminal(id); !terminal || reason != ReasonLagged {
+		t.Fatalf("Terminal(lagged) = (%v, %v), want ReasonLagged", reason, terminal)
+	}
+	// The probe consumed nothing: Take still reports the terminal.
+	if _, res := m.Take(id); res.State != TakeTerminal || res.Reason != ReasonLagged {
+		t.Fatalf("Take after probe = %+v", res)
+	}
+	m.Close(id)
+	if reason, terminal := m.Terminal(id); !terminal || reason != ReasonClosed {
+		t.Fatalf("Terminal(closed) = (%v, %v), want committed ReasonClosed", reason, terminal)
+	}
+}
