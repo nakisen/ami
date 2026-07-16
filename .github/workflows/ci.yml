@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Test exactly the toolchain the matrix installs; fail loudly instead of
+  # silently downloading a different one when go.mod moves ahead.
+  GOTOOLCHAIN: local
+
+jobs:
+  test:
+    name: test (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor policy: the library tracks the latest stable Go release.
+        # Until Go 1.27 is stable the floor is the release candidate; once
+        # it ships this becomes the stable 1.27.x line.
+        go: ['1.27.0-rc.1']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - name: gofmt
+        run: |
+          drift=$(gofmt -l .)
+          if [ -n "$drift" ]; then
+            echo "gofmt drift in:" && echo "$drift" && exit 1
+          fi
+      - name: go vet (includes stdversion)
+        run: go vet ./...
+      - name: build
+        run: go build ./...
+      - name: test (race)
+        run: go test -race ./...
+
+  leakprofile:
+    name: goroutine leak profile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.0-rc.1'
+      - name: test under GOEXPERIMENT=goroutineleakprofile
+        env:
+          GOEXPERIMENT: goroutineleakprofile
+        run: go test ./...
+
+  modernize:
+    name: go fix (modernizers)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.0-rc.1'
+      - name: apply modernizers
+        run: go fix ./...
+      - name: fail on drift
+        run: git diff --exit-code

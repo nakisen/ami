@@ -1,0 +1,7 @@
+# Pre-repository design carrier (private continuity notes; the public
+# design content lives in docs/design.md).
+/ami-client-library-design.md
+
+# Test and coverage artifacts
+*.test
+*.out

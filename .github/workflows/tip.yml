@@ -1,0 +1,33 @@
+name: tip
+
+# Weekly canary against the Go development branch, per the
+# tracks-latest-Go policy. Failures here are signal, not blockers: this
+# workflow is not a required check.
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tip:
+    name: test (gotip)
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+      - name: install gotip
+        run: |
+          GOTOOLCHAIN=auto go install golang.org/dl/gotip@latest
+          gotip download
+          gotip version
+      - name: vet
+        run: gotip vet ./...
+      - name: test (race)
+        run: gotip test -race ./...
