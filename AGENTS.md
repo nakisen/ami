@@ -19,6 +19,10 @@ Asterisk Manager Interface (AMI). License: Apache-2.0. Root package `ami`.
   Append each landed slice's decisions there; never rewrite old sections.
   When it disagrees with design.md, design.md wins and the divergence is
   fixed in the same change that finds it.
+- [docs/demux.md](docs/demux.md) — the demultiplexer state-machine design
+  note: entities, transition tables, invariants, and conformance targets
+  for the internal machine the `Client` builds on. Subordinate to
+  design.md.
 - [docs/compatibility.md](docs/compatibility.md) — Go toolchain policy and
   the Asterisk/AMI version table.
 

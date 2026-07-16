@@ -289,9 +289,15 @@ the implementation explicitly documents and tests it.
 
 The demultiplexer, pending correlation, and retirement/drain records are
 implemented as one isolated, table-driven state machine under `internal/`,
-owned by the single reader goroutine, with invariant assertions at every
-transition. Its conformance target is the model-based property that every
-request, list, and subscription commits exactly one terminal result.
+with invariant assertions at every transition. The machine is passive and
+synchronous: the single reader goroutine is its only message router, while
+control-plane operations — admission, registration, consumption, close —
+enter briefly at their linearization points under the same session lock,
+and no machine call blocks, waits on a consumer, or runs user code. Its
+conformance target is the model-based property that every request, list,
+and subscription commits exactly one terminal result. The detailed
+state-machine design — entities, transition tables, invariants, and
+conformance scenarios — is [demux.md](demux.md).
 
 ### Explicit subscriptions
 

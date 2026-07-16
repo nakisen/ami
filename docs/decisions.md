@@ -173,3 +173,57 @@ behavior against Asterisk. The survey's key evidence is kept under
   remains open (design.md question 1) and is not enforced by `Conn`; its
   ctx-bounded operations give a synchronous owner full deadline control
   in the meantime.
+
+## 2026-07-16 — Demultiplexer state-machine design ([demux.md](demux.md))
+
+- The demultiplexer is specified before implementation as a passive,
+  synchronous, generic machine (`internal/demux`) owning
+  classification, correlation, follow/list/subscription registries,
+  retirement/drain records, bounded queues, and all accounting — no
+  I/O, no locks of its own, no user code, no clock; callers supply a
+  monotonic timestamp and the session arms real timers from
+  `NextDeadline`. The session serializes access under one lock; the
+  reader goroutine is the only message router, and control-plane
+  operations enter at their linearization points. design.md's summary
+  wording ("owned by the single reader goroutine") was refined in the
+  same change to state routing ownership precisely.
+- Correlation is response-strict and event-lenient: a response matching
+  no active branch and no live retirement record — unknown, duplicate,
+  foreign, or missing an ActionID — is a terminal correlation error,
+  while events never are. Foreign or absent ActionIDs fan out
+  ordinarily, a stale own request-kind ActionID merely loses its follow
+  branch, and stale list-kind ActionIDs are discarded silently forever
+  through the kind discriminator. Rationale: responses are exactly-once
+  request accounting; events are broadcast that other sessions' actions
+  also tag.
+- Retirement evidence is per kind: a request-kind record releases when
+  its late response is absorbed, a list-kind record when its terminal
+  mark is absorbed; expiry without evidence closes the client with the
+  retirement cause, and records are created only from slots reserved at
+  admission, never evicted (per design.md). After release, request-kind
+  events degrade to ordinary fan-out — identical to an acknowledged
+  action's events.
+- The reader-liveness invariant is pinned as a machine invariant with
+  reserve-or-terminate as the only delivery primitive. Assertion
+  policy: invariant violations panic inside `internal/demux`; the
+  session's read loop converts any read-loop panic into client death
+  with the cause preserved, keeping the host process alive while
+  refusing to run on corrupted correlation state.
+- Envelope classification is pinned: `Event:` presence wins over an
+  event-specific `Response:` field (`OriginateResponse`); conflicting
+  duplicate envelope fields are fatal; `EventList: start` is
+  confirmatory only; event and completion names are matched
+  ASCII-case-folded; the accounting size of a message is its wire size,
+  Σ(len(key)+len(value)+4)+2. Every queue charges the full size and
+  aggregates sum queue charges, deliberately overcounting shared
+  storage and never undercounting retained memory.
+- Conformance scenarios were extended from the 2026-07-16 kmo/volume
+  discussion: the QueueStatus wallboard interleave and a 500-call
+  unfiltered flood (roughly 300–1500 events/s sustained with
+  multi-thousand-event teardown bursts) asserting parse-and-drop of
+  unmatched traffic at zero queue cost, exact-boundary laggard
+  isolation, and a routing benchmark as headroom evidence; a fuzz
+  target over envelope streams joins the corpus. Numeric defaults newly
+  visible here (pending count, matcher dimensions, list dimensions,
+  retirement count/lifetime) stay in open question 1 for the `Client`
+  slice, which also delivers the busy-system queue-sizing guide.
