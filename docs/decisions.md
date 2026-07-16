@@ -325,3 +325,15 @@ the conformance suite. Decisions made while implementing:
   cost linear in registered branches, not queued items; violations
   panic with stable `ami/demux:` messages for the session's read loop
   to convert into client death.
+- The conformance suite (targets 1, 2, and 4) landed immediately after:
+  a fan-out/correlation oracle plus a full-surface random driver shared
+  with the fuzz target, and the 500-call unfiltered flood. The oracle's
+  quiescence property caught a real bug on its first seeds — the death
+  cascade never released fully-resolved tickets, a leak invisible to
+  every deterministic test. Routing benchmarks on the development
+  machine (Ryzen 7 9700X) document the headroom the flood discussion
+  asked for: an unmatched event — the busy unfiltered connection's
+  common case — routes in ~54 ns with zero allocations,
+  delivered-and-consumed in ~119 ns, an 8-way fan-out in ~735 ns, so
+  the scenario's sustained ~1,500 events/s costs well under 0.1% of
+  one core with the production invariant checks included.

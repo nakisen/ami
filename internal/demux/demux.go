@@ -181,6 +181,7 @@ func (m *Machine[T]) kill(cause Reason) Effects[T] {
 			m.publicPending--
 		}
 		fx.Complete = append(fx.Complete, Completion[T]{Ticket: Ticket{p.ticket}, Delivered: false})
+		m.maybeReleaseTicket(p)
 	}
 
 	for _, s := range m.subOrder {

@@ -24,3 +24,24 @@ func (m *Machine[T]) Branches() (subs, follows, lists int) {
 func (m *Machine[T]) Tickets() int {
 	return len(m.pendByTicket)
 }
+
+// debugTickets lists unresolved ticket states for test diagnostics.
+func (m *Machine[T]) debugTickets() []string {
+	var out []string
+	for _, p := range m.pendByTicket {
+		out = append(out, p.actionID+
+			" state="+itoa(int(p.state))+
+			" committed="+boolStr(p.committed)+
+			" dead="+boolStr(p.deadDone)+
+			" folOpen="+boolStr(p.folOpen)+
+			" lstOpen="+boolStr(p.lstOpen))
+	}
+	return out
+}
+
+func boolStr(b bool) string {
+	if b {
+		return "t"
+	}
+	return "f"
+}
