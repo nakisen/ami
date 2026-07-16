@@ -20,6 +20,11 @@ after TCP accept, before authentication:
 `include/asterisk/manager.h` (`AMI_VERSION`) across release tags of
 [asterisk/asterisk](https://github.com/asterisk/asterisk) (2026-07).
 
+**The supported protocol floor is AMI 2.0.0 (Asterisk 12+).** The AMI 1.x
+rows (Asterisk 1.4–11) are retained for banner diagnostics only: those
+sessions are out of scope, and the library neither promises correct
+operation there nor actively refuses them.
+
 | Asterisk | AMI version | Notes |
 |---|---|---|
 | 1.4 | 1.0 | hardcoded literal |
@@ -48,6 +53,8 @@ parser.
 
 ## Support policy (pre-release)
 
+- The supported protocol floor is AMI 2.0.0 (Asterisk 12+); AMI 1.x is
+  out of scope.
 - Live integration tests target Asterisk 18, 20, 22, and 23.
 - Legacy-only behaviors — `--END COMMAND--` Command framing (pre-14.2),
   MD5 challenge login against older releases, and chan_sip-era list

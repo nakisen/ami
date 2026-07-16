@@ -53,9 +53,10 @@ evidence. The short version of what this library does differently:
 - **Go:** this library tracks the latest stable Go release. It is
   currently developed against `go1.27rc1`; see
   [docs/compatibility.md](docs/compatibility.md) for the toolchain policy.
-- **Asterisk:** the live-tested matrix is Asterisk 18, 20, 22, and 23;
-  the [compatibility table](docs/compatibility.md) maps AMI banner
-  versions back to Asterisk 1.4.
+- **Asterisk:** the supported protocol floor is AMI 2.0 (Asterisk 12+);
+  the live-tested matrix is Asterisk 18, 20, 22, and 23. The
+  [compatibility table](docs/compatibility.md) interprets older banners
+  for diagnostics only.
 
 ## License
 
