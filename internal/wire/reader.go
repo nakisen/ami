@@ -19,6 +19,11 @@ type Reader struct {
 	lim   Limits
 	buf   []byte // line accumulation buffer, reused across reads
 	dirty bool   // bytes of an unreturned frame have been consumed
+
+	// onFrameStart fires on the reading goroutine when the first byte
+	// of a new banner or message frame is consumed — the moment Dirty
+	// transitions to true.
+	onFrameStart func()
 }
 
 // NewReader returns a Reader parsing from r under lim. The caller is
@@ -34,6 +39,13 @@ func NewReader(r io.Reader, lim Limits) *Reader {
 // read can resume cleanly. A true Dirty after a failure means the frame
 // is partially consumed and framing cannot be resumed.
 func (r *Reader) Dirty() bool { return r.dirty }
+
+// SetFrameStartHook registers fn to run whenever the first byte of a
+// new banner or message frame has been consumed, whether it arrived
+// from the stream or was already buffered. The connection layer uses
+// the hook to arm a partial-frame deadline that an idle stream — no
+// pending frame — never starts. fn runs on the reading goroutine.
+func (r *Reader) SetFrameStartHook(fn func()) { r.onFrameStart = fn }
 
 // ReadBanner reads the protocol banner line the server sends before its
 // first message and returns the line content without its terminator. The
@@ -163,8 +175,11 @@ func (r *Reader) readLine(max int, errTooLong error) ([]byte, int, error) {
 	r.buf = r.buf[:0]
 	for {
 		frag, err := r.br.ReadSlice('\n')
-		if len(frag) > 0 {
+		if len(frag) > 0 && !r.dirty {
 			r.dirty = true
+			if r.onFrameStart != nil {
+				r.onFrameStart()
+			}
 		}
 		r.buf = append(r.buf, frag...)
 		if err == bufio.ErrBufferFull {

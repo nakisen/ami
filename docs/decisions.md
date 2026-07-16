@@ -401,3 +401,27 @@ dimensions stay tight. Ratified values, with the load-bearing rationale:
   owed with the session `Config` documentation, will tell
   intermittent-pull consumers to raise `Items` to poll interval ×
   event rate.
+
+## 2026-07-17 — `Conn` partial-frame age enforcement
+
+The ratified 30 s partial-frame age landed as `WireLimits.MaxPartialFrameAge`
+plus a `wire.Reader` frame-start hook. Implementation decisions:
+
+- **The wire package stays clock-free.** The reader only reports the
+  moment `Dirty` transitions to true — the first byte of a new frame,
+  whether it arrived from the stream or was already buffered — through
+  a hook; the deadline arithmetic lives in `Conn`.
+- **The read deadline gained a second writer, so pokes take
+  ownership.** Cancellation pokes and frame-start armings are
+  serialized under the connection lock, and a poke sets a flag that
+  frame-start honors: a frame byte racing a cancellation can no longer
+  overwrite the poked deadline and stall the cancellation by up to a
+  full age.
+- **Expiry classification needs no extra state:** an uninterrupted
+  `os.ErrDeadlineExceeded` with a dirty frame can only be the armed
+  age (a poke implies an interrupted operation), and surfaces as
+  `*ProtocolError{limit, MaxPartialFrameAge}` on a closed connection.
+  Successful reads disarm the deadline before the next idle wait.
+- A frame delivered in one chunk parses out of the buffer without
+  another stream read and never observes the deadline — which is also
+  what makes the exact-boundary tests deterministic with a 1 ns age.

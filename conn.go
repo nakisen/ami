@@ -42,6 +42,12 @@ var aLongTimeAgo = time.Unix(1, 0)
 // error, because the frame — and therefore the connection — is
 // unrecoverable.
 //
+// A frame that stays incomplete past WireLimits.MaxPartialFrameAge is an
+// inbound violation: the read fails with a *ProtocolError and the
+// connection closes. The age clock starts when the frame's first byte is
+// consumed and stops when the frame completes, so an idle connection
+// with no pending frame never trips it.
+//
 // The one exception is outbound validation: a *ProtocolError from
 // WriteAction is reported before any byte is written and leaves the
 // connection usable.
@@ -51,11 +57,13 @@ type Conn struct {
 	conn net.Conn
 	r    *wire.Reader
 	lim  wire.Limits
+	age  time.Duration // partial-frame age, armed at each frame's first byte
 
 	wbuf []byte // encode buffer, reused by the single writer
 
-	mu     sync.Mutex
-	closed bool
+	mu      sync.Mutex
+	closed  bool
+	rdPoked bool // a cancellation poke owns the read deadline
 }
 
 // NewConn wraps an established network connection — plain TCP, TLS, or
@@ -64,14 +72,16 @@ type Conn struct {
 // directly. On error, NewConn has performed no I/O and ownership stays
 // with the caller.
 func NewConn(conn net.Conn, limits WireLimits) (*Conn, error) {
-	lim, err := limits.resolve()
+	lim, age, err := limits.resolve()
 	if err != nil {
 		return nil, err
 	}
 	if conn == nil {
 		return nil, errors.New("ami: NewConn: nil connection")
 	}
-	return &Conn{conn: conn, r: wire.NewReader(conn, lim), lim: lim}, nil
+	c := &Conn{conn: conn, r: wire.NewReader(conn, lim), lim: lim, age: age}
+	c.r.SetFrameStartHook(c.frameStarted)
+	return c, nil
 }
 
 // ReadBanner reads the protocol banner line the server sends before its
@@ -112,10 +122,13 @@ func (c *Conn) read(ctx context.Context, op func() error) error {
 	if err := c.enter(ctx); err != nil {
 		return err
 	}
-	release := c.interrupt(ctx, c.conn.SetReadDeadline)
+	release := c.interrupt(ctx, c.readPoke, c.readClear)
 	err := op()
 	interrupted := release()
 	if err == nil {
+		// Every successful read consumed a frame, so a partial-frame
+		// deadline is armed; disarm it before the next idle wait.
+		c.readClear()
 		return nil
 	}
 	if c.isClosed() {
@@ -125,6 +138,11 @@ func (c *Conn) read(ctx context.Context, op func() error) error {
 		return ctx.Err()
 	}
 	c.poison()
+	if !interrupted && c.r.Dirty() && errors.Is(err, os.ErrDeadlineExceeded) {
+		// The only uninterrupted deadline that can expire mid-frame is
+		// the armed partial-frame age.
+		return &ProtocolError{Category: "limit", Dimension: "MaxPartialFrameAge"}
+	}
 	return wireError(err)
 }
 
@@ -162,7 +180,7 @@ func (c *Conn) WriteAction(ctx context.Context, action Action, actionID string) 
 	}
 	c.wbuf = buf
 
-	release := c.interrupt(ctx, c.conn.SetWriteDeadline)
+	release := c.interrupt(ctx, c.writePoke, c.writeClear)
 	n, err := c.conn.Write(buf)
 	interrupted := release()
 	if err == nil {
@@ -221,24 +239,60 @@ func (c *Conn) poison() {
 // interrupt arms a watcher that pokes a past deadline into the
 // connection when ctx is canceled, unblocking the pending operation. The
 // returned release function reports whether the watcher fired; before
-// reporting true it waits for the poke to finish and clears the poked
-// deadline, so an operation that completed despite the cancellation
-// leaves the connection usable.
-func (c *Conn) interrupt(ctx context.Context, set func(time.Time) error) (release func() bool) {
+// reporting true it waits for the poke to finish and runs clear, so an
+// operation that completed despite the cancellation leaves the
+// connection usable.
+func (c *Conn) interrupt(ctx context.Context, poke, clear func()) (release func() bool) {
 	done := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
 		defer close(done)
-		set(aLongTimeAgo)
+		poke()
 	})
 	return func() bool {
 		if stop() {
 			return false
 		}
 		<-done
-		set(time.Time{})
+		clear()
 		return true
 	}
 }
+
+// readPoke interrupts a blocked read by poking a past read deadline. The
+// flag it takes under the lock stops a later frame-start arming from
+// overwriting the poke and stalling the cancellation.
+func (c *Conn) readPoke() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rdPoked = true
+	c.conn.SetReadDeadline(aLongTimeAgo)
+}
+
+// readClear clears the poked or armed read deadline and re-enables
+// frame-start arming.
+func (c *Conn) readClear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rdPoked = false
+	c.conn.SetReadDeadline(time.Time{})
+}
+
+// frameStarted arms the partial-frame deadline as the reader consumes
+// the first byte of a new frame. A cancellation poke in flight wins: the
+// poked deadline must not be extended.
+func (c *Conn) frameStarted() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.rdPoked || c.closed {
+		return
+	}
+	c.conn.SetReadDeadline(time.Now().Add(c.age))
+}
+
+// writePoke and writeClear interrupt and restore the write deadline;
+// nothing else touches it, so the write side needs no flag.
+func (c *Conn) writePoke()  { c.conn.SetWriteDeadline(aLongTimeAgo) }
+func (c *Conn) writeClear() { c.conn.SetWriteDeadline(time.Time{}) }
 
 // wireError maps internal wire errors onto the public error surface;
 // every other error passes through verbatim.

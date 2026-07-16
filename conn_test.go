@@ -7,9 +7,11 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nakisen/ami/internal/wire"
 )
@@ -76,6 +78,9 @@ func TestNewConnValidation(t *testing.T) {
 	})
 	if _, err := NewConn(client, WireLimits{MaxLineBytes: -1}); err == nil || !strings.Contains(err.Error(), "MaxLineBytes") {
 		t.Fatalf("NewConn with negative limit: err = %v, want error naming MaxLineBytes", err)
+	}
+	if _, err := NewConn(client, WireLimits{MaxPartialFrameAge: -time.Second}); err == nil || !strings.Contains(err.Error(), "MaxPartialFrameAge") {
+		t.Fatalf("NewConn with negative age: err = %v, want error naming MaxPartialFrameAge", err)
 	}
 	// Constructor failure leaves ownership with the caller: the same
 	// connection must still be fully usable.
@@ -326,6 +331,117 @@ func TestConnWriteCancelPartialCloses(t *testing.T) {
 	}
 	if err := c.WriteAction(context.Background(), ping, ""); !errors.Is(err, ErrClosed) {
 		t.Fatalf("WriteAction() after poisoning = %v, want ErrClosed", err)
+	}
+}
+
+func TestConnPartialFrameAgeExpires(t *testing.T) {
+	c, server := newPipeConn(t, WireLimits{MaxPartialFrameAge: time.Nanosecond})
+	resCh := make(chan error, 1)
+	go func() {
+		_, err := c.ReadMessage(context.Background())
+		resCh <- err
+	}()
+	// A pipe write completes only when fully consumed, so after Write
+	// returns the parser has provably consumed the frame's first bytes
+	// and armed the already-expired deadline; the frame never completes.
+	if _, err := server.Write([]byte("Event: X\r\nPar")); err != nil {
+		t.Fatalf("priming the frame: %v", err)
+	}
+	err := <-resCh
+	var pe *ProtocolError
+	if !errors.As(err, &pe) || pe.Category != "limit" || pe.Dimension != "MaxPartialFrameAge" {
+		t.Fatalf("ReadMessage() = %v, want limit/MaxPartialFrameAge", err)
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("partial-frame expiry surfaced as a context error")
+	}
+	if _, err := c.ReadMessage(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("ReadMessage() after expiry = %v, want ErrClosed", err)
+	}
+}
+
+func TestConnPartialFrameAgeIdleUnaffected(t *testing.T) {
+	client, server := net.Pipe()
+	sc := newSignalConn(client)
+	c, err := NewConn(sc, WireLimits{MaxPartialFrameAge: time.Nanosecond})
+	if err != nil {
+		t.Fatalf("NewConn() error = %v", err)
+	}
+	t.Cleanup(func() {
+		c.Close()
+		server.Close()
+	})
+	// An idle wait holds no pending frame, so even the tightest possible
+	// age must not run; the provably-in-flight read abandons cleanly.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-sc.readEntered
+		cancel()
+	}()
+	if _, err := c.ReadMessage(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("idle ReadMessage() = %v, want context.Canceled", err)
+	}
+	// A frame delivered in one chunk parses from the buffer without a
+	// further stream read, so even a 1ns age admits it.
+	go server.Write([]byte("Event: Quick\r\n\r\n"))
+	msg, err := c.ReadMessage(context.Background())
+	if err != nil || msg.Get("Event") != "Quick" {
+		t.Fatalf("ReadMessage() = (%v, %v)", msg, err)
+	}
+	// The success disarmed the long-expired deadline: the next read must
+	// block on the idle stream instead of failing instantly.
+	go server.Write([]byte("Event: Again\r\n\r\n"))
+	msg, err = c.ReadMessage(context.Background())
+	if err != nil || msg.Get("Event") != "Again" {
+		t.Fatalf("ReadMessage() after disarm = (%v, %v)", msg, err)
+	}
+}
+
+// deadlineRecorder records every SetReadDeadline value so tests can
+// assert exactly who owns the read deadline.
+type deadlineRecorder struct {
+	net.Conn
+	mu   sync.Mutex
+	sets []time.Time
+}
+
+func (d *deadlineRecorder) SetReadDeadline(t time.Time) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.sets = append(d.sets, t)
+	return nil
+}
+
+func (d *deadlineRecorder) snapshot() []time.Time {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.sets)
+}
+
+func TestConnFrameStartYieldsToCancelPoke(t *testing.T) {
+	rec := &deadlineRecorder{}
+	c := &Conn{conn: rec, age: time.Minute}
+	c.frameStarted() // no poke in flight: arms the age deadline
+	c.readPoke()     // the cancellation poke takes ownership
+	c.frameStarted() // must not extend the poked deadline
+	c.readClear()    // release re-enables arming
+	c.frameStarted()
+	got := rec.snapshot()
+	if len(got) != 4 {
+		t.Fatalf("SetReadDeadline calls = %d (%v), want 4: the poked frame start must not set a deadline", len(got), got)
+	}
+	future := time.Now().Add(30 * time.Second)
+	if !got[0].After(future) {
+		t.Fatalf("first arming = %v, want the age in the future", got[0])
+	}
+	if !got[1].Equal(aLongTimeAgo) {
+		t.Fatalf("poke set %v, want the past instant", got[1])
+	}
+	if !got[2].IsZero() {
+		t.Fatalf("clear set %v, want the zero time", got[2])
+	}
+	if !got[3].After(future) {
+		t.Fatalf("re-arming = %v, want the age in the future", got[3])
 	}
 }
 

@@ -2,6 +2,7 @@ package ami
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/nakisen/ami/internal/wire"
 )
@@ -21,6 +22,12 @@ const (
 	defaultMaxActionFields       = 128       // AST_MAX_MANHEADERS: the server rejects longer actions
 	defaultMaxActionLineBytes    = 1022      // the server's 1024-byte input window minus CRLF
 	defaultMaxActionBytes        = 128 << 10 // the server's aggregate ceiling of 128 lines x 1024 bytes
+
+	// defaultMaxPartialFrameAge is a time dimension, so it is exempt
+	// from the headroom policy and stays tight: 30 seconds still honors
+	// the 8 MiB command-output ceiling arriving over a ~280 KiB/s link,
+	// while ordinary frames complete in milliseconds.
+	defaultMaxPartialFrameAge = 30 * time.Second
 )
 
 // WireLimits bounds every wire dimension of one connection. Each zero
@@ -78,11 +85,20 @@ type WireLimits struct {
 	// Default 131072 (128 KiB), the server's aggregate ceiling of 128
 	// maximal lines.
 	MaxActionBytes int
+
+	// MaxPartialFrameAge bounds the wall-clock life of one partially
+	// read inbound frame. The clock starts when the frame's first byte
+	// is consumed and stops when the frame completes, so an idle
+	// connection with no pending frame is never affected. A frame still
+	// incomplete past the age is an inbound violation: the read fails
+	// and the connection closes, because a partial frame cannot be
+	// resumed. Default 30 seconds.
+	MaxPartialFrameAge time.Duration
 }
 
 // resolve applies defaults to zero fields, rejects negative fields, and
-// returns the effective wire limits.
-func (l WireLimits) resolve() (wire.Limits, error) {
+// returns the effective wire limits and partial-frame age.
+func (l WireLimits) resolve() (wire.Limits, time.Duration, error) {
 	w := wire.Limits{
 		MaxBannerBytes:        defaultMaxBannerBytes,
 		MaxLineBytes:          defaultMaxLineBytes,
@@ -110,11 +126,18 @@ func (l WireLimits) resolve() (wire.Limits, error) {
 		{"MaxActionBytes", l.MaxActionBytes, &w.MaxActionBytes},
 	} {
 		if d.set < 0 {
-			return wire.Limits{}, fmt.Errorf("ami: WireLimits.%s is negative", d.name)
+			return wire.Limits{}, 0, fmt.Errorf("ami: WireLimits.%s is negative", d.name)
 		}
 		if d.set > 0 {
 			*d.dst = d.set
 		}
 	}
-	return w, nil
+	age := defaultMaxPartialFrameAge
+	if l.MaxPartialFrameAge < 0 {
+		return wire.Limits{}, 0, fmt.Errorf("ami: WireLimits.MaxPartialFrameAge is negative")
+	}
+	if l.MaxPartialFrameAge > 0 {
+		age = l.MaxPartialFrameAge
+	}
+	return w, age, nil
 }

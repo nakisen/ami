@@ -510,3 +510,21 @@ func TestLimitsValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestReaderFrameStartHook(t *testing.T) {
+	r := newTestReader("banner\r\nEvent: A\r\nCount: 1\r\n\r\nEvent: B\r\n\r\n", testLimits())
+	var fires int
+	r.SetFrameStartHook(func() { fires++ })
+	if _, err := r.ReadBanner(); err != nil || fires != 1 {
+		t.Fatalf("after banner: fires = %d, err = %v, want exactly 1", fires, err)
+	}
+	// The second frame's first byte comes from the buffer, not the
+	// stream; the hook must still fire, and only once per frame no
+	// matter how many lines the frame has.
+	if _, err := r.ReadMessage(); err != nil || fires != 2 {
+		t.Fatalf("after first message: fires = %d, err = %v, want exactly 2", fires, err)
+	}
+	if _, err := r.ReadMessage(); err != nil || fires != 3 {
+		t.Fatalf("after second message: fires = %d, err = %v, want exactly 3", fires, err)
+	}
+}
