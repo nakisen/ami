@@ -42,7 +42,7 @@ evidence. The short version of what this library does differently:
 
 | Component | State |
 |---|---|
-| Design ([docs/design.md](docs/design.md)) | decided direction recorded |
+| Design ([docs/design.md](docs/design.md), [decision log](docs/decisions.md)) | decided direction recorded |
 | `internal/wire` — parser, encoder, fuzz corpus | landed |
 | `Conn` — low-level framing | landed |
 | `Client` — session, correlation, keepalive | next up |

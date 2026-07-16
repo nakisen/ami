@@ -10,9 +10,15 @@ Asterisk Manager Interface (AMI). License: Apache-2.0. Root package `ami`.
 
 ## Authoritative documents
 
-- [docs/design.md](docs/design.md) — architecture, decided direction, and
-  rationale. Do not silently contradict it; if a change requires deviating,
-  update the document in the same change and call it out.
+- [docs/design.md](docs/design.md) — architecture and the current decided
+  state; authoritative. Do not silently contradict it; if a change
+  requires deviating, update the document in the same change and call it
+  out.
+- [docs/decisions.md](docs/decisions.md) — append-only dated decision log,
+  one section per decision batch (usually one implementation slice).
+  Append each landed slice's decisions there; never rewrite old sections.
+  When it disagrees with design.md, design.md wins and the divergence is
+  fixed in the same change that finds it.
 - [docs/compatibility.md](docs/compatibility.md) — Go toolchain policy and
   the Asterisk/AMI version table.
 
