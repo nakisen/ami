@@ -337,3 +337,67 @@ the conformance suite. Decisions made while implementing:
   delivered-and-consumed in ~119 ns, an 8-way fan-out in ~735 ns, so
   the scenario's sustained ~1,500 events/s costs well under 0.1% of
   one core with the production invariant checks included.
+
+## 2026-07-16 — Session-layer default limits (design open question 1 resolved)
+
+The last unanchored dimensions were ratified with the user, closing the
+first design.md open question. The standing policy applied throughout:
+byte/count ceilings get headroom over strictness (a ceiling is not an
+allocation; generosity costs memory only under pathology), time
+dimensions stay tight. Ratified values, with the load-bearing rationale:
+
+- **Writer admission 5 s, write attempt 5 s** (a shorter caller context
+  wins). A healthy writer admits in milliseconds and completes the
+  128 KiB ceiling action in well under a second; waiting longer queues
+  work behind a wedged socket. Admission failure is a clean
+  definitely-not-sent, so failing early is cheap and safely retryable.
+  Both align with the keepalive write-attempt deadline ratified
+  earlier.
+- **Partial-frame age 30 s, enforced by `Conn`, not the session read
+  loop.** The deadline arms at the frame's first byte and clears at
+  frame completion, so an idle connection never trips it. 30 s honors
+  the 8 MiB `Command` output ceiling on a ~270 KB/s link; ordinary
+  128 KiB frames need milliseconds. The design note had expected the
+  session read loop to enforce this, but only the framing layer sees
+  the first byte: a loop polling `ReadMessage` with a rolling window
+  would either kill an innocent frame straddling a window edge or
+  double the effective bound, so the knob moved into `Conn` (a small
+  additive API on the existing deadline-poke machinery). With
+  keepalive enabled a wedged stream already dies in ≤40 s; this bound
+  also covers keepalive-disabled sessions.
+- **Retirement and abandoned-drain lifetime 60 s.** Deliberately the
+  loose exception to time-tightness: expiry is client death, so a
+  false positive is expensive, and a slow `Command` or a huge list
+  drain can legitimately run tens of seconds — expiring at 30 s only
+  to receive the response at 40 s reaches the same death through the
+  foreign-response path. True server wedges are keepalive's job
+  (≤40 s); the lifetime's abuse surface is bounded by the slot pool,
+  not by time.
+- **Public pending 256, retirement pool 384, concurrent lists 16.**
+  The coupling that sizes the pool: retirement slots are reserved at
+  admission, so the pool bounds in-flight work too —
+  `MaxRetirement < MaxPending + MaxLists` would make the pending
+  ceiling unreachable. 384 = 256 pending + 16 lists + ~112 outstanding
+  records. 256 pending is 5×+ headroom over aggressive
+  click-to-dial bursts; real deployments run 2–3 concurrent lists.
+- **Per-list queue 4096 items / 8 MiB, total observed 32 MiB,
+  client-wide queued list bytes 64 MiB.** The largest real lists
+  (`CoreShowChannels`, `PJSIPShowEndpoints` at ~10k endpoints) run a
+  few thousand entries / a few MiB; 8 MiB matches the `Command` output
+  anchor. The observed-bytes ceiling ends a "list that never
+  completes" (a completion-matching bug) even when the consumer keeps
+  up. 64 MiB aggregate admits 8 worst-case lists queued at once — the
+  value the flood conformance suite ran with.
+- **Matchers 64 names / 4 KiB, subscriptions 128.** Real matchers
+  carry 1–5 names and the longest event names are ~30 bytes; real
+  clients open fewer than ten subscriptions. Both are free ceilings —
+  the operative brake is the 32 MiB client-wide subscription
+  aggregate anchored earlier.
+- **Per-subscription 512 events / 2 MiB revisited and confirmed
+  final.** The owed revisit closed with flood evidence: an unconsumed
+  full-firehose subscription lags at exactly event 513 (the design
+  intent — lag fast rather than buffer a firehose) while a consuming
+  subscriber never approaches the cap. The busy-system sizing guide,
+  owed with the session `Config` documentation, will tell
+  intermittent-pull consumers to raise `Items` to poll interval ×
+  event rate.

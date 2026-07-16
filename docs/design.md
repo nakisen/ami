@@ -163,6 +163,14 @@ directly.
   connection.
 - A protocol or inbound-limit violation closes the connection because
   subsequent framing cannot be trusted.
+- An optional partial-frame age bounds the wall-clock life of one inbound
+  frame: the deadline arms when the frame's first byte is consumed and
+  clears when the frame completes, so an idle healthy connection never
+  trips it. Exceeding the age closes the connection — a partial frame
+  cannot be resumed. Enforcement lives here rather than in the session
+  read loop because only the framing layer sees the first byte; a loop
+  polling with a rolling window would either kill an innocent frame that
+  straddles a window edge or double the effective bound.
 - `Conn` does not start background goroutines or perform login,
   correlation, subscriptions, or keepalive.
 - The low-level `WriteAction` accepts a separate caller-owned ActionID
@@ -605,6 +613,17 @@ fields per message 1024, Command output 65536 lines / 8 MiB, outbound
 action fields 128 (`AST_MAX_MANHEADERS`), outbound line 1022 content
 bytes (the server's 1024-byte input window minus CRLF), outbound action
 bytes 128 KiB.
+The remaining session dimensions were ratified on 2026-07-16 (rationale
+in [decisions.md](decisions.md)): writer admission 5 s and write attempt
+5 s (a shorter caller context wins), partial-frame age 30 s enforced by
+`Conn` from the first frame byte, retirement and abandoned-drain
+lifetime 60 s, public pending 256, retirement pool 384 (slots reserve at
+admission, so the pool exceeds pending plus concurrent lists or those
+ceilings are unreachable), concurrent lists 16, per-list queue
+4096 items / 8 MiB with 32 MiB total observed bytes, client-wide queued
+list bytes 64 MiB, matchers 64 names / 4 KiB, subscriptions 128. The
+per-subscription 512 events / 2 MiB anchor was revisited against the
+flood conformance evidence and confirmed final.
 Post-authentication byte/count ceilings follow a headroom-over-strictness
 policy — they are ceilings, not allocations, so generosity costs memory
 only under attack or pathology — while time-based dimensions are exempt
@@ -942,16 +961,15 @@ enabled defaults.
 
 ## Open questions
 
-1. Exact safe defaults for the dimensions not yet anchored: writer
-   admission and write-attempt durations, public pending count, per-list
-   and aggregate list bytes, matcher names/bytes, partial-frame age (and
-   its enforcement point, expected to be the session read loop), and
-   retirement/abandoned-drain counts and lifetimes. (Keepalive timings,
-   the core inbound/queue anchors, and — since `Conn` landed — every
-   wire dimension are decided; see [decisions.md](decisions.md).)
-2. `amix` license/attribution and provenance: acceptable Asterisk XML
+1. `amix` license/attribution and provenance: acceptable Asterisk XML
    source license, exact release/commit/checksum, generated-derivative
    obligations, reproducible offline generation, initial typed surface,
    and semver strategy.
-3. Compatibility-label policy for the decided Asterisk matrix (how
+2. Compatibility-label policy for the decided Asterisk matrix (how
    supported versions are labeled and retired in the README).
+
+(Resolved 2026-07-16: every session-level default — writer durations,
+partial-frame age and its `Conn` enforcement point, pending/retirement,
+list, matcher, and subscription dimensions — is now anchored; see
+[decisions.md](decisions.md). Keepalive timings, the core inbound/queue
+anchors, and the wire dimensions were decided earlier.)
