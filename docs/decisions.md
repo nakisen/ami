@@ -265,3 +265,63 @@ behavior against Asterisk. The survey's key evidence is kept under
   the client, but not the timeline that preceded it.
 - From the same review, `MustAction` and `MatchAll` are declined for
   v0.
+
+## 2026-07-16 — `internal/demux` implementation
+
+The demultiplexer state machine landed as `internal/demux`: generic
+over the routed payload (`Machine[T]`), fully synchronous, driven by
+table-driven transition tests covering demux.md's conformance targets
+3 and 5–9. The randomized-oracle, fuzz, and flood targets land with
+the conformance suite. Decisions made while implementing:
+
+- **List retirement evidence is two facts, not one.**
+  [demux.md](demux.md) originally released a list record on its
+  terminal mark alone. That rule strands the late response on every
+  path where the mark resolves first — an abandonment after a buffered
+  completion mark, or a count-mismatch failure before the response —
+  and a stranded response is fatal by the response-strict rule. A list
+  slot now releases only when both the initial response and the
+  terminal mark are resolved; an `Error` response resolves both,
+  because a rejected list never streams; and a record is created
+  holding whatever evidence its action already observed. Request-kind
+  evidence is unchanged (its response). demux.md was amended in this
+  change.
+- **The ticket resolution protocol is pinned in the package
+  documentation.** Every admission is resolved by exactly one write
+  resolution (`CommitWrite` or `AbortNotSent`) and one outcome
+  (completion by response, completion by death, or `Abandon`); a
+  follow or list branch carries one further obligation decided from
+  knowledge the session already holds — `AdoptFollow`/`CloseFollow`,
+  plus the `AdoptList`/`CloseList` pair the design-note sketch lacked.
+  Ticket entries persist until every obligation resolves, so trailing
+  resolutions racing client death are tolerated no-ops rather than
+  use-after-free hazards.
+- **An `Error` list response releases the branch machine-side**, even
+  when an earlier overflow already committed the branch terminal: no
+  list state survives a rejection (design.md's "no handle escapes").
+  After a `Success` response an already-failed branch remains
+  adoptable, terminal, so the session decides the public
+  `Do`/`StartList` error mapping (still deferred to the session
+  slice).
+- **A fan-out victim's charges release before routing continues**, so
+  a later recipient in registration order reserves against the freed
+  aggregate capacity within the same message — the reading of "its
+  charges released, and routing continues" that keeps one laggard from
+  cascading into its neighbors.
+- **A declared count is verified where the completion mark is
+  processed**, including a mark buffered before the response, so a
+  count failure commits at exactly one place; the note's table
+  specified only the streaming case. Correlated traffic arriving after
+  a buffered terminal mark but before the response is absorbed and
+  counted like record quarantine, and still charges the observed-bytes
+  budget.
+- **The keepalive slot is one internal pending plus one internal
+  retirement slot outside the public pools**; an overlapping internal
+  admission is rejected with a distinct sentinel, and an internal
+  record occupies the internal slot, never the public pool.
+- The accounting invariants run in production: after every mutating
+  call the machine re-verifies aggregate-equals-sum-of-charges,
+  per-branch caps, the retirement pool, and the pending count at a
+  cost linear in registered branches, not queued items; violations
+  panic with stable `ami/demux:` messages for the session's read loop
+  to convert into client death.

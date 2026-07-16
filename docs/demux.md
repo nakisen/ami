@@ -149,9 +149,10 @@ Live records are never evicted to admit new work.
 `AbortNotSent` after a response was seen is an invariant violation: a
 server cannot answer an unsent action. For request-kind pendings the
 retirement reservation is released at `Completed`; for list-kind it is
-retained until the list branch itself reaches terminal evidence,
-because a list can still require drain after its successful response
-(overflow, caller close).
+retained until both the initial response and the terminal mark are
+resolved — a list can still require drain after its successful
+response (overflow, caller close), and a late response must always
+find correlated state, never a fatality.
 
 ### Follow branch
 
@@ -222,16 +223,25 @@ starves another.
 ### Retirement / drain record
 
 Created only from the slot reserved at admission: by `Abandon` (either
-kind) and by a list's post-response drain (overflow, caller close).
-While a record is live, its ActionID's traffic is quarantined —
-absorbed and counted, never delivered, per the routing table's
-outcome-unknown row. A record is released only by correlated terminal
-evidence:
+kind) and by a list's drain conversions — overflow before or after the
+response, caller close. While a record is live, its ActionID's traffic
+is quarantined — absorbed and counted, never delivered, per the
+routing table's outcome-unknown row. A record is released only by
+correlated terminal evidence, tracked as two facts (amended when the
+implementation landed: the original mark-only list rule stranded the
+late response on every path where the mark resolved first, and a
+stranded response is fatal by the response-strict rule):
 
 | Kind | Releasing evidence |
 |---|---|
-| request | its response is seen (absorbed, never delivered) |
-| list | its terminal mark is seen: declared completion name, `EventList: Complete`, or `EventList: cancelled` |
+| request | its response (absorbed, never delivered) |
+| list | its terminal mark — declared completion name, `EventList: Complete`, or `cancelled` — **and** its response, so a late response always has a home; an `Error` response resolves both at once, because a rejected list never streams |
+
+A record is created holding whatever evidence its action already
+observed — a drain converted after the response awaits only the mark,
+an abandonment after a buffered mark awaits only the response — and a
+slot whose evidence completes while still held releases without ever
+becoming a record.
 
 After release, later events carrying that request-kind ActionID fan out
 as ordinary events — the same treatment an acknowledged action's events
@@ -384,7 +394,11 @@ per-subscription defaults are revisited against it there.
 
 ## API sketch (signatures only)
 
-Names are indicative; the semantics above are the contract.
+Names are indicative; the semantics above are the contract. The
+session's per-ticket resolution obligations — one write resolution,
+one outcome resolution, and the adoption or closure of any follow or
+list branch — are pinned in the package documentation of
+`internal/demux`.
 
 ```go
 package demux
@@ -418,6 +432,8 @@ func (m *Machine[T]) AbortNotSent(t Ticket)
 func (m *Machine[T]) Abandon(t Ticket, now int64)
 func (m *Machine[T]) AdoptFollow(t Ticket) BranchID
 func (m *Machine[T]) CloseFollow(t Ticket)
+func (m *Machine[T]) AdoptList(t Ticket) BranchID
+func (m *Machine[T]) CloseList(t Ticket)
 func (m *Machine[T]) Subscribe(match Matcher, caps Caps) (BranchID, error)
 func (m *Machine[T]) Close(id BranchID)
 func (m *Machine[T]) Take(id BranchID) (T, TakeResult)
