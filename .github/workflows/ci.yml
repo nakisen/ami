@@ -42,19 +42,10 @@ jobs:
       - name: test (race)
         run: go test -race ./...
 
-  leakprofile:
-    name: goroutine leak profile
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.27.0-rc.1'
-      - name: test under GOEXPERIMENT=goroutineleakprofile
-        env:
-          GOEXPERIMENT: goroutineleakprofile
-        run: go test ./...
-
+  # Goroutine-leak verification needs no dedicated job: the goroutineleak
+  # pprof profile graduated from GOEXPERIMENT (Go 1.26) to a predefined
+  # profile in Go 1.27, so the lifecycle test suite asserts on it directly
+  # inside the normal race-enabled test job.
   modernize:
     name: go fix (modernizers)
     runs-on: ubuntu-latest

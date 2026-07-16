@@ -725,7 +725,7 @@ toolchain plus tip, adopts the `go fix` modernizers, and keeps the default
 | `sync.WaitGroup.Go` (Go 1.25) | Reader, writer, and keepalive worker lifecycle |
 | `testing/synctest` (Go 1.25) | Deterministic keepalive, cancellation, and lifecycle tests without bare sleeps or hidden clocks |
 | `testing.T.ArtifactDir` (Go 1.26) | Redacted integration-test transcripts as CI artifacts |
-| `GOEXPERIMENT=goroutineleakprofile` (Go 1.26) | CI-only goroutine-leak profiling over the lifecycle test suite |
+| `goroutineleak` pprof profile (GOEXPERIMENT in Go 1.26; predefined profile since Go 1.27) | Goroutine-leak assertions over the lifecycle test suite, made from test code in the normal race-enabled CI job — no GOEXPERIMENT needed on the 1.27 floor |
 | Native fuzzing | Wire parser, envelope classification, outbound validation, and demultiplexer state-machine corpus |
 
 Generics — including Go 1.27 generic methods — stay out of the v0 core
