@@ -89,9 +89,10 @@ Asterisk. The survey's key evidence is kept under "Prior art" below.
 - Minor surface decisions: `Message.Get` convenience accessor;
   diagnostics-only `Client.Banner()`; the blocking `Consume(ctx, handler)`
   adapter is targeted at v0.1.
-- Supported protocol floor: AMI 2.0.0 (Asterisk 12+). AMI 1.x sessions
-  (Asterisk 11 and older) are out of scope: no 1.x-specific quirks,
-  fixtures, or conformance targets. The banner stays diagnostic-only —
+- Supported protocol versions: AMI 2.0.0 and newer (Asterisk 12+), i.e.
+  every protocol generation from the 2.x series through 13.0.0 on
+  today's master. Only AMI 1.x sessions (Asterisk 11 and older) are out
+  of scope: no 1.x-specific quirks, fixtures, or conformance targets. The banner stays diagnostic-only —
   the client neither gates nor branches on it, so older servers are
   merely unsupported, not actively refused. The legacy `--END COMMAND--`
   Command framing remains in scope because it ships within the supported
@@ -119,9 +120,9 @@ Asterisk. The survey's key evidence is kept under "Prior art" below.
 - No automatic reconnection, backoff, state replay, or resynchronization
   in the core.
 - No full typed catalog of every AMI action/event in v0.
-- No AMI 1.x protocol support: the supported floor is AMI 2.0.0
-  (Asterisk 12). Older sessions are out of scope rather than refused;
-  the banner remains diagnostic-only.
+- No AMI 1.x protocol support: supported versions are AMI 2.0.0 and
+  newer (Asterisk 12+). Older sessions are out of scope rather than
+  refused; the banner remains diagnostic-only.
 - No authorization policy. The library can send arbitrary AMI actions
   allowed by the supplied AMI identity; applications remain responsible
   for authentication, authorization, target validation, capability checks,
