@@ -44,8 +44,9 @@ credentials, or operational data.
   allowed by the supplied AMI identity; applications remain responsible
   for authentication, authorization, target validation, capability checks,
   and audit.
-- No logging framework, metrics backend, telemetry, or network egress
-  other than the configured AMI endpoint.
+- No logging framework dependency, metrics backend, telemetry, or
+  network egress other than the configured AMI endpoint. Diagnostics are
+  an optional stdlib `log/slog` hook, silent by default.
 
 ## Design principles
 
@@ -640,13 +641,22 @@ only pointer counts.
 - The generic library does not decide whether a particular plain-TCP
   topology is acceptable. Applications own loopback, protected-transport,
   acknowledgment, and authorization policy.
-- The v0 core is silent by default and has no `Logger` in the required
-  public surface. Its own errors contain no raw AMI field values or
-  server-controlled messages.
+- The v0 core is silent by default: `Config.Logger` is an optional
+  stdlib `*slog.Logger` (added 2026-07-16) and nil disables all output.
+  When set, the library emits internal diagnostics through it —
+  connection lifecycle, keepalive, subscription/list lifecycle including
+  lag victims and drop counts, retirement records, terminal causes — as
+  explicitly allowlisted metadata only (names, counts, durations, reason
+  codes), never message contents, field values, credentials, or
+  endpoints. The caller's handler never runs on the read loop: emission
+  passes through a small bounded internal diagnostics queue whose
+  overflow drops diagnostics and counts the drops; dropping diagnostics
+  is acceptable, unlike events. The library's own errors contain no raw
+  AMI field values or server-controlled messages.
 - Generic `Action`/`Message` values cannot promise to discover every
   secret-bearing custom field. They are not automatically dumped by the
-  library, and a future logging adapter must emit only explicitly
-  allowlisted metadata off the read loop.
+  library; the diagnostics logger emits only explicitly allowlisted
+  metadata off the read loop and never serializes message values.
 - `ResponseError.Response()` and other raw accessors are deliberately
   explicit and return untrusted, potentially sensitive data.
 - The library is not an authorization boundary. A successful AMI response
@@ -862,6 +872,7 @@ type Config struct {
     EventMask   string
     Keepalive   KeepaliveConfig
     Limits      Limits
+    Logger      *slog.Logger
 }
 
 type KeepaliveConfig struct {

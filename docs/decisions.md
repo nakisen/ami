@@ -245,3 +245,23 @@ behavior against Asterisk. The survey's key evidence is kept under
   most-typed accessor in any consumer, made typo-proof.
 - The remaining proposals from the same review (`MustAction`,
   `MatchAll`, a `slog` diagnostics hook) stay undecided.
+
+## 2026-07-16 — v0 diagnostics: optional `slog` hook
+
+- The v0 "silent core" stance is amended rather than replaced:
+  `Config.Logger` is an optional stdlib `*slog.Logger`, and nil — the
+  zero value — keeps the library fully silent, so default behavior is
+  unchanged. When set, the library emits internal diagnostics
+  (connection lifecycle, keepalive, subscription/list lifecycle
+  including lag victims and drop counts, retirement records, terminal
+  causes) as explicitly allowlisted metadata only — names, counts,
+  durations, reason codes — never message contents, field values,
+  credentials, or endpoints, consistent with the sanitized-errors rule.
+- The caller's `slog.Handler` is user code, so it never runs on the
+  read loop: emission passes through a small bounded internal
+  diagnostics queue whose overflow drops diagnostics and counts the
+  drops. Dropping diagnostics is acceptable, unlike events. Motivated
+  by field operability: the terminal cause alone answers what killed
+  the client, but not the timeline that preceded it.
+- From the same review, `MustAction` and `MatchAll` are declined for
+  v0.
