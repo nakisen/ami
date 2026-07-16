@@ -97,6 +97,33 @@ Asterisk. The survey's key evidence is kept under "Prior art" below.
   merely unsupported, not actively refused. The legacy `--END COMMAND--`
   Command framing remains in scope because it ships within the supported
   range (Asterisk 12–14.1).
+- `internal/wire` (landed 2026-07-16). The parser returns an ordered
+  field list with keys and values verbatim, consuming exactly one
+  optional space after the key's colon; it never imports the root
+  package, which converts wire fields into an immutable `Message` with a
+  single copy. In a legacy `Response: Follows` command frame, only
+  `Privilege` and `ActionID` are accepted as trailer headers before raw
+  payload begins; payload lines are normalized into synthesized `Output`
+  fields so both Command framings present one message shape; and a
+  payload line that merely ends with `--END COMMAND--` also terminates
+  output, its prefix preserved as the final line, because CLI output
+  lacking a trailing newline glues the terminator and treating it as
+  payload would stall the frame until a limit failed it.
+- Inbound budgets are split by field kind: fields whose key is `Output`
+  — synthesized legacy payload or modern repeated headers — charge the
+  command-output line/byte limits, and every other line charges the
+  per-message field/byte limits, so command output has its own budget
+  and cannot consume the bounds meant for ordinary messages. All nine
+  wire limit dimensions are explicit; `Limits.Validate` rejects
+  non-positive values and an unvalidated zero limit fails closed rather
+  than meaning unbounded.
+- The outbound encoder validates the injection surface (empty key;
+  colon, CR, or LF in a key; CR or LF in a value) and the outbound
+  limits before emitting any byte. A message whose first field encodes
+  `Response: Follows` re-parses under legacy command framing — the one
+  documented round-trip exception — so synthesizing a legacy frame
+  requires raw writes by design; `amitest` will compose such frames as
+  raw bytes.
 
 ## Goals
 
@@ -217,7 +244,8 @@ implementation; the key evidence is kept here as rationale anchors.
 - The parser handles both `Command` output framings: legacy
   `Response: Follows` terminated by `--END COMMAND--`, and the repeated
   `Output:` header form. Both are covered by line, item, and total-output
-  limits.
+  limits. Legacy payload lines are normalized into synthesized `Output`
+  fields, so both framings present the same message shape downstream.
 
 ### Layer 1: `ami.Conn` (public, low level)
 

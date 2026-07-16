@@ -43,8 +43,8 @@ evidence. The short version of what this library does differently:
 | Component | State |
 |---|---|
 | Design ([docs/design.md](docs/design.md)) | decided direction recorded |
-| `internal/wire` — parser, encoder, fuzz corpus | next up |
-| `Conn` — low-level framing | planned |
+| `internal/wire` — parser, encoder, fuzz corpus | landed |
+| `Conn` — low-level framing | next up |
 | `Client` — session, correlation, keepalive | planned |
 | `amitest` — public fake AMI server | planned |
 
