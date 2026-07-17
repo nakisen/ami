@@ -1,3 +1,6 @@
 # Test and coverage artifacts
 *.test
 *.out
+
+# Local scratch space
+tmp/
