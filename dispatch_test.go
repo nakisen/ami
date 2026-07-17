@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/nakisen/ami/internal/demux"
@@ -790,18 +791,30 @@ func TestStartListContextAbandon(t *testing.T) {
 // TestDoneWaitsForInflightDispatch pins the quiescence barrier: Done
 // must not close while a dispatch still holds its machine bookkeeping.
 func TestDoneWaitsForInflightDispatch(t *testing.T) {
-	c, _ := dialTest(t, nil)
-	c.mu.Lock()
-	c.inflight.Add(1) // a dispatch mid-bookkeeping
-	c.mu.Unlock()
-	c.Close()
-	select {
-	case <-c.Done():
-		t.Fatal("Done closed while an in-flight dispatch held its bookkeeping")
-	case <-time.After(50 * time.Millisecond):
-	}
-	c.inflight.Done()
-	waitDone(t, c.Done(), "client after the in-flight hold released")
+	synctest.Test(t, func(t *testing.T) {
+		c, _ := dialTest(t, nil)
+		c.mu.Lock()
+		c.inflight.Add(1) // a dispatch mid-bookkeeping
+		c.mu.Unlock()
+		c.Close()
+
+		// Drain every runnable goroutine in the bubble. The done-closer
+		// has now either blocked on inflight (correct) or closed Done.
+		synctest.Wait()
+		select {
+		case <-c.Done():
+			t.Fatal("Done closed while an in-flight dispatch held its bookkeeping")
+		default:
+		}
+
+		c.inflight.Done()
+		synctest.Wait()
+		select {
+		case <-c.Done():
+		default:
+			t.Fatal("Done stayed open after the in-flight hold released")
+		}
+	})
 }
 
 // TestClientDeathReleasesInflightDispatch drives the barrier end to
@@ -825,74 +838,70 @@ func TestClientDeathReleasesInflightDispatch(t *testing.T) {
 	waitDone(t, c.Done(), "client that died with a dispatch in flight")
 }
 
-// waitConsumerParked waits until the handle's consumer slot is taken
-// and gives the consumer a beat to reach its park point, so a
-// subsequent Close provably races a parked Next rather than one that
-// has not started.
-func waitConsumerParked(t *testing.T, busy *atomic.Bool) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !busy.Load() {
-		if time.Now().After(deadline) {
-			t.Fatal("consumer never entered Next")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(20 * time.Millisecond)
-}
-
 func TestCloseWakesParkedNext(t *testing.T) {
-	c, s := dialTest(t, nil)
-
 	t.Run("subscription", func(t *testing.T) {
-		sub, err := c.Subscribe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		res := make(chan error, 1)
-		go func() {
-			_, err := sub.Next(context.Background())
-			res <- err
-		}()
-		waitConsumerParked(t, &sub.busy)
-		sub.Close()
-		select {
-		case err := <-res:
-			if !errors.Is(err, ErrClosed) {
-				t.Fatalf("Next() after Close = %v, want ErrClosed", err)
+		synctest.Test(t, func(t *testing.T) {
+			c, _ := dialTest(t, nil)
+			sub, err := c.Subscribe()
+			if err != nil {
+				t.Fatal(err)
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("Close left the parked Next blocked forever")
-		}
+			res := make(chan error, 1)
+			go func() {
+				_, err := sub.Next(context.Background())
+				res <- err
+			}()
+			synctest.Wait()
+			if !sub.busy.Load() {
+				t.Fatal("consumer did not park in Next")
+			}
+			sub.Close()
+			synctest.Wait()
+			select {
+			case err := <-res:
+				if !errors.Is(err, ErrClosed) {
+					t.Fatalf("Next() after Close = %v, want ErrClosed", err)
+				}
+			default:
+				t.Fatal("Close left the parked Next blocked forever")
+			}
+		})
 	})
 
 	t.Run("list", func(t *testing.T) {
-		started := make(chan struct{})
-		var list *List
-		go func() {
-			defer close(started)
-			act, _ := NewAction("QueueStatus")
-			list, _ = c.StartList(context.Background(), act, ListSpec{})
-		}()
-		act := s.readAction()
-		s.respond(act.id, "Success")
-		<-started
+		synctest.Test(t, func(t *testing.T) {
+			c, s := dialTest(t, nil)
+			started := make(chan struct{})
+			var list *List
+			go func() {
+				defer close(started)
+				act, _ := NewAction("QueueStatus")
+				list, _ = c.StartList(context.Background(), act, ListSpec{})
+			}()
+			act := s.readAction()
+			s.respond(act.id, "Success")
+			<-started
 
-		res := make(chan error, 1)
-		go func() {
-			_, err := list.Next(context.Background())
-			res <- err
-		}()
-		waitConsumerParked(t, &list.busy)
-		list.Close()
-		select {
-		case err := <-res:
-			if !errors.Is(err, ErrClosed) {
-				t.Fatalf("Next() after Close = %v, want ErrClosed", err)
+			res := make(chan error, 1)
+			go func() {
+				_, err := list.Next(context.Background())
+				res <- err
+			}()
+			synctest.Wait()
+			if !list.busy.Load() {
+				t.Fatal("consumer did not park in Next")
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("Close left the parked Next blocked forever")
-		}
+			list.Close()
+			synctest.Wait()
+			select {
+			case err := <-res:
+				if !errors.Is(err, ErrClosed) {
+					t.Fatalf("Next() after Close = %v, want ErrClosed", err)
+				}
+			default:
+				t.Fatal("Close left the parked Next blocked forever")
+			}
+		})
 	})
 }
 
