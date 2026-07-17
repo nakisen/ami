@@ -156,9 +156,11 @@ const (
 // StartList dispatches one list action. ctx governs admission, the
 // action write, and the initial response only: on initial success,
 // ownership transfers through the returned List — which may already be
-// cleanly complete — and further consumption is bounded by the List's
-// own methods. On every non-nil error no handle escapes; the client
-// owns any required bounded drain.
+// terminal: cleanly complete, cancelled, or failed before the response
+// arrived, with the typed result observed through Err, Next, and Done —
+// and further consumption is bounded by the List's own methods. On
+// every non-nil error no handle escapes; the client owns any required
+// bounded drain.
 func (c *Client) StartList(ctx context.Context, action Action, spec ListSpec) (*List, error) {
 	if len(spec.CountFields) > maxCountFields {
 		return nil, errors.New("ami: ListSpec.CountFields exceeds 16 names")

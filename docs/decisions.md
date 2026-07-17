@@ -650,3 +650,19 @@ flow are the exact failure class a fake exists to catch:
 - **A repeated `Action` or `ActionID` envelope field in one inbound
   frame is a recorded violation** — a conforming client never sends
   one — while the frame still dispatches on its first values.
+
+## 2026-07-17 — StartList transfers the handle on initial success, terminal or not
+
+The external review asked whether a pre-response list failure —
+overflow, a count problem, or a buffered cancellation — should turn
+into a `StartList` error instead of an adopted already-terminal
+handle. Ratified: the current behavior stays. The initial Success
+response is the single ownership boundary; the handle transfers even
+when the branch is already terminal, and the typed failure is observed
+through `Err`, `Next`, and `Done` exactly as it would be had it landed
+a moment after adoption. This keeps `StartList`'s return shape
+independent of whether a failure raced the response, loses nothing,
+and avoids a second error surface for the same failure class.
+design.md previously said "no handle escapes" for pre-response
+failures and was aligned to the implementation; the behavior is pinned
+by a root-level regression test.

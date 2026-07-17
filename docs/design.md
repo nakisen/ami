@@ -398,9 +398,14 @@ function that would run on the read loop.
   correlated event that is not terminal — by declared name, by
   `EventList: Complete`, or by `EventList: cancelled` — is an item.
 - If initial success wins, ownership transfers through the returned
-  `List`, which may already be cleanly complete. If rejection or a
-  pre-response list failure wins, buffered correlated data is discarded,
-  no handle escapes, and the client owns any required retirement/drain.
+  `List` — even when the branch is already terminal: cleanly complete,
+  cancelled, or failed by overflow or a count problem before the
+  response arrived. The typed terminal result is then observed through
+  the handle (`Err`, `Next`, `Done`), never dropped, so `StartList`'s
+  return shape does not depend on whether a failure raced ahead of the
+  response. If the server rejects the action, `StartList` returns the
+  `*ResponseError`, buffered correlated data is discarded, no handle
+  escapes, and the client owns any required retirement/drain.
 - If the complete action was written and the request context ends before
   the initial response, `StartList` returns an outcome-unknown
   `RequestError`, no handle escapes, and the healthy client enters bounded

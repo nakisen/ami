@@ -667,6 +667,41 @@ func TestStartListCountFieldsBounds(t *testing.T) {
 	}
 }
 
+// TestStartListAdoptsPreResponseFailure pins the ratified ownership
+// rule: the initial Success response is the single transfer boundary,
+// so a failure that raced ahead of the response still hands the
+// caller an already-terminal handle whose typed result is observed
+// through Err/Next/Done — StartList's return shape does not depend on
+// which side of the response the failure landed.
+func TestStartListAdoptsPreResponseFailure(t *testing.T) {
+	c, s := dialTest(t, nil)
+	done := make(chan struct{})
+	var list *List
+	var startErr error
+	go func() {
+		defer close(done)
+		act, _ := NewAction("QueueStatus")
+		list, startErr = c.StartList(context.Background(), act, ListSpec{})
+	}()
+	act := s.readAction()
+	// A buffered cancellation ahead of the response.
+	s.event("QueueStatusComplete", "ActionID", act.id, "EventList", "Cancelled")
+	s.respond(act.id, "Success")
+	<-done
+	if startErr != nil {
+		t.Fatalf("StartList() = %v, want the handle despite the buffered failure", startErr)
+	}
+	defer list.Close()
+	waitDone(t, list.Done(), "already-terminal adopted list")
+	var le *ListError
+	if err := list.Err(); !errors.As(err, &le) || le.Failure != ListCancelled {
+		t.Fatalf("Err() = %v, want ListError{cancelled}", err)
+	}
+	if _, err := list.Next(context.Background()); !errors.As(err, &le) {
+		t.Fatalf("Next() = %v, want the ListError", err)
+	}
+}
+
 func TestStartListCancelled(t *testing.T) {
 	c, s := dialTest(t, nil)
 	done := make(chan struct{})
