@@ -78,11 +78,14 @@ func parseMark(v string) demux.Mark {
 
 // classify extracts the routing envelope from one parsed message. The
 // rules are pinned in docs/demux.md: an Event field beats an
-// event-specific Response field, conflicting duplicate envelope fields
-// classify as invalid — which the machine treats as fatal — and the
-// event name is ASCII-folded here, once. A message carrying neither
-// field is unclassifiable and likewise fatal: correlation cannot be
-// trusted past it.
+// event-specific Response field, and conflicting duplicates of the
+// fields that classify the message — Event, ActionID, and EventList on
+// events; Response and ActionID on responses — classify as invalid,
+// which the machine treats as fatal. Repeated Response values inside an
+// event-class message are ordered payload, never envelope. The event
+// name is ASCII-folded here, once. A message carrying neither field is
+// unclassifiable and likewise fatal: correlation cannot be trusted past
+// it.
 func (c *Client) classify(msg Message) demux.Envelope {
 	env := demux.Envelope{Size: wireSize(msg), Now: c.now()}
 
@@ -107,6 +110,16 @@ func (c *Client) classify(msg Message) demux.Envelope {
 		for _, v := range events[1:] {
 			if !equalFoldASCII(v, name) {
 				return env
+			}
+		}
+		// EventList is envelope on an event: its mark decides between a
+		// clean completion and a cancellation, so a conflicting repeat
+		// must not silently resolve by field order.
+		if lists := msg.Values("EventList"); len(lists) > 1 {
+			for _, v := range lists[1:] {
+				if !equalFoldASCII(v, lists[0]) {
+					return env
+				}
 			}
 		}
 		env.Class = demux.ClassEvent

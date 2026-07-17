@@ -578,3 +578,26 @@ tests run the real `Dial` path without a PBX. Decisions:
   the loopback addresses for 24 hours — so TLS scenarios are one line
   and no certificate fixture with an embedded expiry can rot in the
   repository.
+
+## 2026-07-17 — External-review hardening: role-sensitive envelope validation
+
+An external review of `c949bc3` found that repeated `EventList:` values
+were never compared: classification took the first, so a message
+carrying both `Complete` and `cancelled` committed whichever mark came
+first — field order deciding between a clean snapshot and a
+cancellation. Closing that gap forced the conflicting-duplicate rule
+itself to be ratified precisely, and the blanket rule the documents
+promised turned out to overpromise:
+
+- **The envelope is role-sensitive.** On an event-class message the
+  classifying fields are `Event`, `ActionID`, and `EventList`;
+  conflicting duplicates of any of them are fatal. On a response-class
+  message they are `Response` and `ActionID`. Identical duplicates stay
+  tolerated everywhere.
+- **Repeated `Response:` values inside an event-class message are
+  ordered payload, not envelope.** The `Event` field alone decides
+  classification — `OriginateResponse` legitimately carries both — so a
+  `Response` repeat inside an event correlates nothing, and failing the
+  session over it would reject plausible real-world traffic for no
+  correlation gain. docs/design.md and docs/demux.md previously
+  promised the stricter blanket rule and were narrowed to match.

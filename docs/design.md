@@ -129,11 +129,16 @@ implementation; the key evidence is kept here as rationale anchors.
   field, as `OriginateResponse` does. `Event.Name()` exposes the
   classifying event name — the `Event` field's value, always non-empty on
   a classified event — directly.
-- Conflicting duplicate envelope fields or ActionIDs are rejected.
-  Package-level action construction rejects CR/LF injection, malformed
-  keys, and reserved `Action`/`ActionID` fields. Client-configured
-  count/byte limits are validated later, before dispatch, and low-level
-  connection limits are validated by `WriteAction`.
+- Conflicting duplicate envelope fields are rejected role-sensitively:
+  the fields that classify a message must not repeat with differing
+  values — `Event`, `ActionID`, and `EventList` on events; `Response`
+  and `ActionID` on responses. Repeated `Response:` fields inside an
+  event-class message are ordered payload and are preserved.
+  Package-level action construction rejects NUL/CR/LF injection,
+  malformed keys, and reserved `Action`/`ActionID` fields.
+  Client-configured count/byte limits are validated later, before
+  dispatch, and low-level connection limits are validated by
+  `WriteAction`.
 - The parser handles both `Command` output framings: legacy
   `Response: Follows` terminated by `--END COMMAND--`, and the repeated
   `Output:` header form. Both are covered by line, item, and total-output

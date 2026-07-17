@@ -100,10 +100,13 @@ total input for the machine:
   an event-specific `Response:` field, as `OriginateResponse` does. A
   message containing `Response:` without `Event:` is a response.
   Neither field present is an invalid envelope: fatal.
-- Conflicting duplicate envelope fields — repeated `Event:`,
-  `Response:`, `ActionID:`, or `EventList:` fields with differing
-  values — are an invalid envelope: fatal. Identical duplicates are
-  tolerated.
+- Conflicting duplicate envelope fields are an invalid envelope, fatal
+  — role-sensitively: on an event-class message the classifying fields
+  are `Event:`, `ActionID:`, and `EventList:`; on a response-class
+  message they are `Response:` and `ActionID:`. Repeated `Response:`
+  fields inside an event-class message are ordered payload, preserved
+  verbatim and never envelope. Identical duplicates are tolerated
+  everywhere.
 - The `EventList:` value is matched case-insensitively: `Complete` is a
   clean terminal mark, `cancelled` a cancellation mark, and `start` is
   confirmatory only — a list response without it still arms the

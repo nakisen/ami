@@ -111,6 +111,21 @@ func TestClassify(t *testing.T) {
 			msg(Field{"Event", "A"}, Field{"ActionID", "one"}, Field{"ActionID", "two"}),
 			demux.Envelope{},
 		},
+		{
+			"conflicting eventlist marks",
+			msg(Field{"Event", "X"}, Field{"EventList", "Complete"}, Field{"EventList", "cancelled"}),
+			demux.Envelope{},
+		},
+		{
+			"identical eventlist repeats tolerated",
+			msg(Field{"Event", "X"}, Field{"EventList", "Complete"}, Field{"eventlist", "complete"}),
+			demux.Envelope{Class: demux.ClassEvent, Name: "x", Mark: demux.MarkComplete},
+		},
+		{
+			"response repeats inside an event are payload",
+			msg(Field{"Event", "X"}, Field{"Response", "Success"}, Field{"Response", "Error"}),
+			demux.Envelope{Class: demux.ClassEvent, Name: "x"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
