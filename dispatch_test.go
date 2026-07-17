@@ -625,6 +625,77 @@ func TestStartListContextAbandon(t *testing.T) {
 	mustDo(t, c, s, "Ping")
 }
 
+// waitConsumerParked waits until the handle's consumer slot is taken
+// and gives the consumer a beat to reach its park point, so a
+// subsequent Close provably races a parked Next rather than one that
+// has not started.
+func waitConsumerParked(t *testing.T, busy *atomic.Bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !busy.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("consumer never entered Next")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
+}
+
+func TestCloseWakesParkedNext(t *testing.T) {
+	c, s := dialTest(t, nil)
+
+	t.Run("subscription", func(t *testing.T) {
+		sub, err := c.Subscribe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := make(chan error, 1)
+		go func() {
+			_, err := sub.Next(context.Background())
+			res <- err
+		}()
+		waitConsumerParked(t, &sub.busy)
+		sub.Close()
+		select {
+		case err := <-res:
+			if !errors.Is(err, ErrClosed) {
+				t.Fatalf("Next() after Close = %v, want ErrClosed", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Close left the parked Next blocked forever")
+		}
+	})
+
+	t.Run("list", func(t *testing.T) {
+		started := make(chan struct{})
+		var list *List
+		go func() {
+			defer close(started)
+			act, _ := NewAction("QueueStatus")
+			list, _ = c.StartList(context.Background(), act, ListSpec{})
+		}()
+		act := s.readAction()
+		s.respond(act.id, "Success")
+		<-started
+
+		res := make(chan error, 1)
+		go func() {
+			_, err := list.Next(context.Background())
+			res <- err
+		}()
+		waitConsumerParked(t, &list.busy)
+		list.Close()
+		select {
+		case err := <-res:
+			if !errors.Is(err, ErrClosed) {
+				t.Fatalf("Next() after Close = %v, want ErrClosed", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Close left the parked Next blocked forever")
+		}
+	})
+}
+
 func TestDoInvalidActionKeepsClientAlive(t *testing.T) {
 	c, s := dialTest(t, nil)
 

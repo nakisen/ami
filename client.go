@@ -415,8 +415,8 @@ func (c *Client) registerBranchLocked(id demux.BranchID) *branchState {
 }
 
 // commitTerminalLocked commits a branch's first terminal result: the
-// mapped error is stable from here on and Done closes. A result that
-// already won is preserved.
+// mapped error is stable from here on, Done closes, and any parked
+// consumer wakes. A result that already won is preserved.
 func (c *Client) commitTerminalLocked(b *branchState, reason demux.Reason) {
 	if b.terminal {
 		return
@@ -424,6 +424,14 @@ func (c *Client) commitTerminalLocked(b *branchState, reason demux.Reason) {
 	b.terminal = true
 	b.err = c.errForReasonLocked(reason)
 	close(b.done)
+	// Terminal paths outside routing — a local Close, the death sweep —
+	// carry no machine Wake effect, so the commit itself must unpark a
+	// consumer blocked in takeBranch; without this, Next on a background
+	// context would wait forever on a branch nothing will signal again.
+	select {
+	case b.notify <- struct{}{}:
+	default:
+	}
 	if reason != demux.ReasonNone && reason != demux.ReasonClosed {
 		c.diag.info("branch terminated", "reason", reason.String())
 	}
