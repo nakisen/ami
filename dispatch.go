@@ -225,18 +225,30 @@ func (c *Client) writeAdmitted(ctx context.Context, action Action, id string, tk
 		return nil
 	}
 
+	if pe, ok := errors.AsType[*ProtocolError](err); ok {
+		// Outbound validation rejected the action. Per the Conn error
+		// contract a *ProtocolError from writeAction is reported before
+		// any byte is written and leaves the connection usable, so the
+		// caller's bad input fails alone: definitely not sent, session
+		// alive.
+		if c.resolveNotSentLocked(tkt, w, admit) {
+			return &RequestError{Phase: PhaseWrite, ActionID: id, cause: pe}
+		}
+		return nil // a delivered completion won the race; the caller consumes it
+	}
+
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		// Cleanly abandoned: provably zero bytes, connection usable.
-		if c.resolveNotSentLocked(tkt, w) {
+		if c.resolveNotSentLocked(tkt, w, admit) {
 			return &RequestError{Phase: PhaseWrite, ActionID: id, cause: err}
 		}
-		return nil // a completion won the race; the caller consumes it
+		return nil // a delivered completion won the race; the caller consumes it
 	}
 
 	// The connection is closed. Zero written bytes is still definitely
 	// not sent; any written byte leaves the outcome unknown.
 	if n == 0 {
-		raced := !c.resolveNotSentLocked(tkt, w)
+		raced := !c.resolveNotSentLocked(tkt, w, admit)
 		c.die(err)
 		if raced {
 			return nil
@@ -263,18 +275,30 @@ func (c *Client) writeAdmitted(ctx context.Context, action Action, id string, tk
 
 // resolveNotSentLocked resolves a failed write as definitely-not-sent,
 // releasing every reservation and provisional branch. It reports false
-// when a completion won the race instead — a concurrent death, or a
-// server so broken it answered an unsent action — in which case the
-// write resolution is bookkeeping only and the completion, left in the
-// waiter channel, is the committed outcome.
-func (c *Client) resolveNotSentLocked(tkt demux.Ticket, w chan demux.Completion[Message]) bool {
+// only when a delivered completion won the race — a server so broken it
+// answered an unsent action — in which case the write resolution is
+// bookkeeping only and the completion, left in the waiter channel, is
+// the committed outcome. A raced death completion does not flip the
+// outcome: zero bytes reached the wire, so definitely-not-sent stays
+// true and the death's unknown-outcome default is discarded along with
+// any provisional branch bookkeeping.
+func (c *Client) resolveNotSentLocked(tkt demux.Ticket, w chan demux.Completion[Message], admit demux.AdmitOptions[Message]) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	select {
 	case cpl := <-w:
 		c.resolveDeadLocked(func() { c.machine.CommitWrite(tkt) })
-		w <- cpl
-		return false
+		if cpl.Delivered {
+			w <- cpl
+			return false
+		}
+		if admit.Follow != nil {
+			c.resolveDeadLocked(func() { c.machine.CloseFollow(tkt) })
+		}
+		if admit.List != nil {
+			c.resolveDeadLocked(func() { c.machine.CloseList(tkt) })
+		}
+		return true
 	default:
 	}
 	delete(c.waiters, tkt)

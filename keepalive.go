@@ -82,9 +82,10 @@ func (c *Client) ping() error {
 	c.releaseWriter()
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			if !c.resolveNotSentLocked(tkt, w) {
-				// A death completion won the race; the client is
-				// already terminating with its own cause.
+			// A raced death completion resolves as not-sent too; the
+			// ctx check below (or die's first-winner rule) then keeps
+			// the real root cause.
+			if !c.resolveNotSentLocked(tkt, w, demux.AdmitOptions[Message]{}) {
 				return nil
 			}
 			if c.ctx.Err() != nil {
@@ -95,7 +96,7 @@ func (c *Client) ping() error {
 		// The connection is closed: the transport cause wins over a
 		// keepalive classification.
 		if n == 0 {
-			c.resolveNotSentLocked(tkt, w)
+			c.resolveNotSentLocked(tkt, w, demux.AdmitOptions[Message]{})
 			return err
 		}
 		c.mu.Lock()

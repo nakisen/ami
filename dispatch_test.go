@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nakisen/ami/internal/demux"
 )
 
 func TestDoSuccess(t *testing.T) {
@@ -621,6 +623,85 @@ func TestStartListContextAbandon(t *testing.T) {
 	s.event("QueueMember", "ActionID", act.id)
 	s.event("QueueStatusComplete", "ActionID", act.id, "EventList", "Complete")
 	mustDo(t, c, s, "Ping")
+}
+
+func TestDoInvalidActionKeepsClientAlive(t *testing.T) {
+	c, s := dialTest(t, nil)
+
+	// A zero-value Action fails outbound validation before any byte is
+	// written; the failure must stay scoped to its dispatch instead of
+	// killing the session.
+	_, err := c.Do(context.Background(), Action{})
+	var re *RequestError
+	if !errors.As(err, &re) || re.Phase != PhaseWrite || re.MayHaveExecuted() {
+		t.Fatalf("Do(zero Action) = %v, want not-sent write RequestError", err)
+	}
+	var pe *ProtocolError
+	if !errors.As(err, &pe) {
+		t.Fatalf("Do(zero Action) = %v, want a wrapped *ProtocolError", err)
+	}
+
+	// An action exceeding the outbound wire limits is rejected the same
+	// way: validated before the first byte, definitely not sent.
+	big, err := NewAction("Command", Field{Key: "Command", Value: strings.Repeat("x", 64<<10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Do(context.Background(), big)
+	if !errors.As(err, &re) || re.Phase != PhaseWrite || re.MayHaveExecuted() || !errors.As(err, &pe) {
+		t.Fatalf("Do(oversized) = %v, want not-sent write RequestError wrapping *ProtocolError", err)
+	}
+
+	// The session survived both rejections.
+	mustDo(t, c, s, "Ping")
+}
+
+func TestWriteDeathRaceStaysNotSent(t *testing.T) {
+	c, _ := dialTest(t, nil)
+
+	// Admit a request by hand and let client death complete it, exactly
+	// the state a death completion racing a failed zero-byte write
+	// leaves behind.
+	c.mu.Lock()
+	tkt, err := c.machine.Admit("synthetic-race-r1", demux.KindRequest, demux.AdmitOptions[Message]{})
+	if err != nil {
+		c.mu.Unlock()
+		t.Fatal(err)
+	}
+	w := make(chan demux.Completion[Message], 1)
+	c.waiters[tkt] = w
+	c.mu.Unlock()
+
+	c.die(errors.New("synthetic transport failure"))
+
+	// Zero bytes reached the wire, so definitely-not-sent must win over
+	// the death completion's unknown-outcome default.
+	if !c.resolveNotSentLocked(tkt, w, demux.AdmitOptions[Message]{}) {
+		t.Fatal("resolveNotSentLocked adopted a raced death completion as the outcome")
+	}
+}
+
+func TestWriteRaceDeliveredResponseWins(t *testing.T) {
+	c, _ := dialTest(t, nil)
+
+	c.mu.Lock()
+	tkt, err := c.machine.Admit("synthetic-race-r2", demux.KindRequest, demux.AdmitOptions[Message]{})
+	if err != nil {
+		c.mu.Unlock()
+		t.Fatal(err)
+	}
+	c.mu.Unlock()
+
+	// A delivered completion — a response that outran the write failure —
+	// is the committed outcome and stays in the waiter channel.
+	w := make(chan demux.Completion[Message], 1)
+	w <- demux.Completion[Message]{Ticket: tkt, Delivered: true}
+	if c.resolveNotSentLocked(tkt, w, demux.AdmitOptions[Message]{}) {
+		t.Fatal("resolveNotSentLocked discarded a delivered response")
+	}
+	if len(w) != 1 {
+		t.Fatal("the delivered completion was not left for the awaiter")
+	}
 }
 
 func TestSubscribeValidationAndLimits(t *testing.T) {
