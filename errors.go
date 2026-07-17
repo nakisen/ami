@@ -241,6 +241,12 @@ const (
 	// ListCountMismatch: the completion event declared a count that did
 	// not match the observed items.
 	ListCountMismatch
+
+	// ListCountMalformed: the completion event carried a configured
+	// count field whose value was unusable — empty, non-numeric,
+	// negative, or out of range — so the declared integrity check could
+	// not run.
+	ListCountMalformed
 )
 
 // String returns the stable failure name.
@@ -252,13 +258,16 @@ func (f ListFailure) String() string {
 		return "overflowed"
 	case ListCountMismatch:
 		return "count mismatch"
+	case ListCountMalformed:
+		return "count malformed"
 	}
 	return "unknown"
 }
 
 // A ListError reports a terminal list failure: cancellation by the
-// server, overflow of the list's bounded state, or a declared-count
-// mismatch. Its Error text is stable and carries no remote data.
+// server, overflow of the list's bounded state, or a declared count
+// that mismatched the observed items or could not be parsed at all.
+// Its Error text is stable and carries no remote data.
 type ListError struct {
 	// Failure classifies what terminated the list.
 	Failure ListFailure

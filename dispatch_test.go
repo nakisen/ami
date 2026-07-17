@@ -540,6 +540,52 @@ func TestStartListCountMismatch(t *testing.T) {
 	mustDo(t, c, s, "Ping") // the client survives a failed list
 }
 
+func TestStartListMalformedCount(t *testing.T) {
+	c, s := dialTest(t, nil)
+	done := make(chan struct{})
+	var list *List
+	go func() {
+		defer close(done)
+		act, _ := NewAction("QueueStatus")
+		list, _ = c.StartList(context.Background(), act, ListSpec{CountFields: []string{"ListItems"}})
+	}()
+	act := s.readAction()
+	s.respond(act.id, "Success")
+	<-done
+	defer list.Close()
+
+	s.event("QueueMember", "ActionID", act.id)
+	s.event("QueueStatusComplete", "ActionID", act.id, "EventList", "Complete", "ListItems", "bogus")
+
+	// The declared integrity check could not run: that is a typed list
+	// failure, not a clean end-of-stream over a possibly short snapshot.
+	waitDone(t, list.Done(), "malformed-count list")
+	var le *ListError
+	if err := list.Err(); !errors.As(err, &le) || le.Failure != ListCountMalformed {
+		t.Fatalf("Err() = %v, want ListError{count malformed}", err)
+	}
+	if _, err := list.Next(context.Background()); !errors.As(err, &le) {
+		t.Fatalf("Next() = %v, want the ListError", err)
+	}
+	mustDo(t, c, s, "Ping") // the failure stays scoped to the list
+}
+
+func TestStartListCountFieldsBounds(t *testing.T) {
+	c, _ := dialTest(t, nil)
+	act, _ := NewAction("QueueStatus")
+	many := make([]string, maxCountFields+1)
+	for i := range many {
+		many[i] = "F"
+	}
+	if _, err := c.StartList(context.Background(), act, ListSpec{CountFields: many}); err == nil {
+		t.Fatal("StartList accepted a CountFields declaration over the name bound")
+	}
+	long := []string{strings.Repeat("x", maxCountFieldSize+1)}
+	if _, err := c.StartList(context.Background(), act, ListSpec{CountFields: long}); err == nil {
+		t.Fatal("StartList accepted a CountFields declaration over the byte bound")
+	}
+}
+
 func TestStartListCancelled(t *testing.T) {
 	c, s := dialTest(t, nil)
 	done := make(chan struct{})

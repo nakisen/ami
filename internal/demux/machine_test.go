@@ -8,8 +8,10 @@ import (
 )
 
 // The model tests drive the machine with int payloads. For lists, the
-// completion event's payload doubles as its declared count: countFromPayload
-// reports the payload as the count when it is non-negative.
+// completion event's payload doubles as its declared count:
+// countFromPayload reports the payload as the declared count when it
+// is non-negative and absent otherwise; malformed-count tests supply
+// their own extractor.
 
 func testLimits() Limits {
 	return Limits{
@@ -37,11 +39,11 @@ func newMachine(t *testing.T, mut ...func(*Limits)) *Machine[int] {
 	return New[int](lim)
 }
 
-func countFromPayload(v int) (int64, bool) {
+func countFromPayload(v int) (int64, CountVerdict) {
 	if v < 0 {
-		return 0, false
+		return 0, CountAbsent
 	}
-	return int64(v), true
+	return int64(v), CountDeclared
 }
 
 // Envelope builders. Sizes default to 10 bytes.

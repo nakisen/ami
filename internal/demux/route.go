@@ -242,9 +242,15 @@ func (m *Machine[T]) routeListEvent(l *list[T], env Envelope, msg T, fx *Effects
 		}
 	case complete:
 		// A declared count, when configured and present, is verified
-		// against the items observed before anything commits.
+		// against the items observed before anything commits; a
+		// malformed declared value fails the list rather than silently
+		// skipping the integrity check the caller declared.
 		if l.count != nil {
-			if want, ok := l.count(msg); ok && want != l.items {
+			switch want, verdict := l.count(msg); {
+			case verdict == CountMalformed:
+				m.failList(l, ReasonCountMalformed, fx)
+				return
+			case verdict == CountDeclared && want != l.items:
 				m.failList(l, ReasonCountMismatch, fx)
 				return
 			}

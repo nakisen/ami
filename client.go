@@ -464,6 +464,8 @@ func (c *Client) errForReasonLocked(reason demux.Reason) error {
 		return &ListError{Failure: ListCancelled}
 	case demux.ReasonCountMismatch:
 		return &ListError{Failure: ListCountMismatch}
+	case demux.ReasonCountMalformed:
+		return &ListError{Failure: ListCountMalformed}
 	}
 	return ErrClosed
 }

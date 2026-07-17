@@ -145,10 +145,10 @@ type ListOptions[T any] struct {
 	ObservedBytes int
 
 	// Count extracts the declared item count from the completion
-	// event, reporting whether a configured count field was present.
-	// It must be a pure bounded function authored by the session — it
+	// event, reporting its verdict: absent, declared, or malformed. It
+	// must be a pure bounded function authored by the session — it
 	// runs during Route. Nil means no count is declared.
-	Count func(T) (int64, bool)
+	Count func(T) (int64, CountVerdict)
 }
 
 // Machine errors. Admit and Subscribe return these sentinels with

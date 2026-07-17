@@ -224,6 +224,33 @@ func TestListBufferedCancelled(t *testing.T) {
 	wantAggregates(t, m, 0, 0)
 }
 
+// TestListMalformedCountFailsList pins the malformed-count verdict: a
+// completion whose declared count cannot be used fails the list with
+// its own reason instead of silently skipping the declared check and
+// committing a clean snapshot.
+func TestListMalformedCountFailsList(t *testing.T) {
+	m := newMachine(t)
+	o := listOpts("done")
+	o.Count = func(v int) (int64, CountVerdict) {
+		if v == 99 {
+			return 0, CountMalformed
+		}
+		return 0, CountAbsent
+	}
+	tk := startList(t, m, "l1", o)
+	route(t, m, resp("l1", KindList, true), 0)
+	id := m.AdoptList(tk)
+	route(t, m, evOwn("item", "l1", KindList), 1)
+	fx := route(t, m, evOwn("done", "l1", KindList), 99)
+	if !woken(fx, id) {
+		t.Fatal("failed list not woken")
+	}
+	takeState(t, m, id, TakeTerminal, ReasonCountMalformed)
+	wantRetirement(t, m, 0, 0) // response and mark both in evidence
+	m.Close(id, 0)
+	wantAggregates(t, m, 0, 0)
+}
+
 func TestListCancelledMidStream(t *testing.T) {
 	m := newMachine(t)
 	tk := startList(t, m, "l1", listOpts("done"))

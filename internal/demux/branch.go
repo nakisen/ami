@@ -56,7 +56,7 @@ type list[T any] struct {
 	adopted  bool
 
 	completions map[string]struct{}
-	count       func(T) (int64, bool)
+	count       func(T) (int64, CountVerdict)
 	caps        Caps
 	observedCap int
 

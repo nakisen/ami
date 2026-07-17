@@ -601,3 +601,16 @@ promised turned out to overpromise:
   session over it would reject plausible real-world traffic for no
   correlation gain. docs/design.md and docs/demux.md previously
   promised the stricter blanket rule and were narrowed to match.
+
+## 2026-07-17 — Malformed list counts fail the list
+
+`countExtractor` treated an unparseable declared count as absent, so
+`ListItems: bogus` silently skipped the very integrity check the
+caller declared and a truncated snapshot could commit as a clean
+`io.EOF`. The count verdict is now three-valued — absent, declared,
+malformed — and a malformed declared value fails the list with the new
+`ListError{ListCountMalformed}`: honest-failure semantics say a
+declared check that cannot run is a failure, not a silent downgrade.
+`ListSpec.CountFields` is also bounded (16 names, 1 KiB total,
+validated before dispatch) because the extractor runs on the read
+loop against every completion event.

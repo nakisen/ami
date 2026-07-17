@@ -102,12 +102,30 @@ const (
 	ReasonKilled            // session-initiated Kill
 
 	// Branch terminals.
-	ReasonLagged        // reserve-or-terminate failed for a subscription or follow
-	ReasonOverflow      // list capacity or observed-bytes budget exhausted
-	ReasonCancelled     // EventList: cancelled
-	ReasonCountMismatch // declared list count did not match observed items
-	ReasonClosed        // local close
-	ReasonClientDead    // terminated by the client-wide death cascade
+	ReasonLagged         // reserve-or-terminate failed for a subscription or follow
+	ReasonOverflow       // list capacity or observed-bytes budget exhausted
+	ReasonCancelled      // EventList: cancelled
+	ReasonCountMismatch  // declared list count did not match observed items
+	ReasonCountMalformed // declared list count present but unusable
+	ReasonClosed         // local close
+	ReasonClientDead     // terminated by the client-wide death cascade
+)
+
+// CountVerdict is a list count extractor's finding for one completion
+// event.
+type CountVerdict uint8
+
+const (
+	// CountAbsent: no configured count field is present; there is
+	// nothing to verify.
+	CountAbsent CountVerdict = iota
+	// CountDeclared: a count field is present and parsed; verify it
+	// against the observed items.
+	CountDeclared
+	// CountMalformed: a count field is present but its value is
+	// unusable. The declared integrity check cannot run, which fails
+	// the list rather than silently degrading to no check at all.
+	CountMalformed
 )
 
 // String returns the stable diagnostic name of the reason.
@@ -135,6 +153,8 @@ func (r Reason) String() string {
 		return "list cancelled"
 	case ReasonCountMismatch:
 		return "list count mismatch"
+	case ReasonCountMalformed:
+		return "list count malformed"
 	case ReasonClosed:
 		return "closed"
 	case ReasonClientDead:

@@ -132,11 +132,23 @@ type ListSpec struct {
 	// pure EventList-header convention.
 	CompletionEvents []string
 
-	// CountFields names response fields that may declare the expected
-	// item count, checked in order; the first present field is verified
-	// against the observed items. Empty declares no count.
+	// CountFields names completion-event fields that may declare the
+	// expected item count, checked in order; the first present field is
+	// verified against the observed items, and a present-but-unusable
+	// value fails the list with a malformed-count *ListError instead of
+	// silently skipping the declared check. The declaration is bounded —
+	// at most 16 names totaling at most 1 KiB, validated before
+	// dispatch — because the extractor runs on the read loop. Empty
+	// declares no count.
 	CountFields []string
 }
+
+// ListSpec.CountFields bounds: the extractor scans these names against
+// every completion event on the read loop.
+const (
+	maxCountFields    = 16
+	maxCountFieldSize = 1 << 10
+)
 
 // StartList dispatches one list action. ctx governs admission, the
 // action write, and the initial response only: on initial success,
@@ -145,6 +157,16 @@ type ListSpec struct {
 // own methods. On every non-nil error no handle escapes; the client
 // owns any required bounded drain.
 func (c *Client) StartList(ctx context.Context, action Action, spec ListSpec) (*List, error) {
+	if len(spec.CountFields) > maxCountFields {
+		return nil, errors.New("ami: ListSpec.CountFields exceeds 16 names")
+	}
+	total := 0
+	for _, f := range spec.CountFields {
+		total += len(f)
+	}
+	if total > maxCountFieldSize {
+		return nil, errors.New("ami: ListSpec.CountFields exceeds 1 KiB of names")
+	}
 	admit := demux.AdmitOptions[Message]{List: &demux.ListOptions[Message]{
 		Completions:   spec.CompletionEvents,
 		Caps:          demux.Caps{Items: c.sess.listItems, Bytes: c.sess.listBytes},
@@ -417,26 +439,28 @@ func (c *Client) followCaps(items int) demux.Caps {
 }
 
 // countExtractor builds the pure, bounded count function a ListSpec
-// declares: the first present field wins, and an unparseable value
-// counts as absent. It runs during Route and touches nothing but the
-// message.
-func countExtractor(fields []string) func(Message) (int64, bool) {
+// declares: the first present field wins. A present value that cannot
+// be used — empty, non-numeric, negative, or out of range — is
+// malformed rather than absent, so the integrity check the caller
+// declared can never be skipped silently. It runs during Route and
+// touches nothing but the message.
+func countExtractor(fields []string) func(Message) (int64, demux.CountVerdict) {
 	if len(fields) == 0 {
 		return nil
 	}
 	fs := slices.Clone(fields)
-	return func(m Message) (int64, bool) {
+	return func(m Message) (int64, demux.CountVerdict) {
 		for _, f := range fs {
 			v, ok := m.Lookup(f)
 			if !ok {
 				continue
 			}
 			n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
-			if err != nil {
-				return 0, false
+			if err != nil || n < 0 {
+				return 0, demux.CountMalformed
 			}
-			return n, true
+			return n, demux.CountDeclared
 		}
-		return 0, false
+		return 0, demux.CountAbsent
 	}
 }
