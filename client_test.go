@@ -258,6 +258,71 @@ func TestDialLoginRejected(t *testing.T) {
 	}
 }
 
+// TestDialLoginEnvelopeStrict pins the pre-session envelope rules: the
+// login reply must classify as this exchange's response under the same
+// rules as session traffic, and only an exact Success authenticates.
+func TestDialLoginEnvelopeStrict(t *testing.T) {
+	tests := []struct {
+		name      string
+		reply     func(s *script, id string)
+		wantProto bool // else ErrLoginFailed
+	}{
+		{
+			"event-class reply is not a response",
+			func(s *script, id string) {
+				s.send("Event: FullyBooted\r\nResponse: Success\r\nActionID: " + id + "\r\n\r\n")
+			},
+			true,
+		},
+		{
+			"conflicting duplicate response",
+			func(s *script, id string) {
+				s.send("Response: Success\r\nResponse: Error\r\nActionID: " + id + "\r\n\r\n")
+			},
+			true,
+		},
+		{
+			"foreign actionid",
+			func(s *script, id string) { s.respond("someone-else-1", "Success") },
+			true,
+		},
+		{
+			// A Follows response arrives as a complete legacy command
+			// frame on the wire; it acknowledges command output and must
+			// not authenticate.
+			"follows does not authenticate",
+			func(s *script, id string) {
+				s.send("Response: Follows\r\nActionID: " + id + "\r\n--END COMMAND--\r\n\r\n")
+			},
+			false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clientEnd, serverEnd := net.Pipe()
+			t.Cleanup(func() { serverEnd.Close() })
+			s := newScript(t, serverEnd)
+			go func() {
+				s.send("Asterisk Call Manager/9.0.0\r\n")
+				act := s.readAction()
+				tt.reply(s, act.id)
+			}()
+			_, err := Dial(context.Background(), testConfig(clientEnd))
+			var de *DialError
+			if !errors.As(err, &de) || de.Phase != "login" {
+				t.Fatalf("Dial() = %v, want DialError{login}", err)
+			}
+			if tt.wantProto {
+				if _, ok := errors.AsType[*ProtocolError](err); !ok {
+					t.Fatalf("Dial() = %v, want a wrapped *ProtocolError", err)
+				}
+			} else if !errors.Is(err, ErrLoginFailed) {
+				t.Fatalf("Dial() = %v, want ErrLoginFailed", err)
+			}
+		})
+	}
+}
+
 func TestDialMD5Login(t *testing.T) {
 	clientEnd, serverEnd := net.Pipe()
 	s := newScript(t, serverEnd)

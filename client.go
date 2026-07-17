@@ -208,7 +208,7 @@ func (c *Client) login(ctx context.Context, cfg Config) error {
 		if err != nil {
 			return err
 		}
-		if !responseSuccess(resp) {
+		if !loginSuccess(resp) {
 			return ErrLoginFailed
 		}
 		nonce := resp.Get("Challenge")
@@ -239,14 +239,25 @@ func (c *Client) login(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	if !responseSuccess(resp) {
+	if !loginSuccess(resp) {
 		return ErrLoginFailed
 	}
 	return nil
 }
 
+// loginSuccess reports an exact Response: Success disposition. The
+// pre-session exchanges accept nothing weaker: Follows acknowledges
+// command output and is meaningless for Challenge and Login, so it
+// must not authenticate.
+func loginSuccess(m Message) bool {
+	return equalFoldASCII(m.Get("Response"), "Success")
+}
+
 // loginExchange writes one pre-session action and reads its response,
-// strictly matched by ActionID.
+// classified under the same envelope rules as session traffic and
+// strictly matched by ActionID: an event-class reply, a conflicting
+// duplicate envelope, or a foreign or missing ActionID fails the login
+// instead of passing as its response.
 func (c *Client) loginExchange(ctx context.Context, act Action) (Message, error) {
 	id := c.newActionID(demux.KindRequest)
 	if err := c.conn.WriteAction(ctx, act, id); err != nil {
@@ -256,10 +267,7 @@ func (c *Client) loginExchange(ctx context.Context, act Action) (Message, error)
 	if err != nil {
 		return Message{}, err
 	}
-	if msg.Get("ActionID") != id {
-		return Message{}, &ProtocolError{Category: "correlation", Dimension: "login response"}
-	}
-	if _, ok := msg.Lookup("Response"); !ok {
+	if env := c.classify(msg); env.Class != demux.ClassResponse || env.ActionID != id {
 		return Message{}, &ProtocolError{Category: "correlation", Dimension: "login response"}
 	}
 	return msg, nil
