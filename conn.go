@@ -172,7 +172,7 @@ func (c *Conn) writeAction(ctx context.Context, action Action, actionID string) 
 	if action.name == "" {
 		return 0, &ProtocolError{Category: "envelope", Dimension: "empty action name"}
 	}
-	if strings.ContainsAny(actionID, "\r\n") {
+	if strings.ContainsAny(actionID, "\x00\r\n") {
 		return 0, &ProtocolError{Category: "envelope", Dimension: "action id"}
 	}
 	fields := make([]wire.Field, 0, len(action.fields)+2)

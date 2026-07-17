@@ -23,12 +23,15 @@ type Action struct {
 }
 
 // NewAction validates and constructs an Action. The name must be
-// non-empty and free of CR and LF. Field keys must be non-empty, free of
-// colons, CR, and LF, and must not be the reserved Action or ActionID
-// envelope keys under case-insensitive matching; field values must be
-// free of CR and LF. Duplicate keys are legal and their order is
-// preserved. The fields are copied, so later mutation of the caller's
-// slice cannot change the action.
+// non-empty and free of NUL, CR, and LF. Field keys must be non-empty,
+// free of colons, NUL, CR, and LF, and must not be the reserved Action
+// or ActionID envelope keys under case-insensitive matching; field
+// values must be free of NUL, CR, and LF. NUL is rejected alongside the
+// line terminators because C-based managers truncate at it, so a
+// NUL-bearing value could reach the server as a different action than
+// the one the application validated. Duplicate keys are legal and their
+// order is preserved. The fields are copied, so later mutation of the
+// caller's slice cannot change the action.
 //
 // NewAction validates shape and injection only. Connection-level size
 // limits are enforced by WriteAction against the connection's
@@ -37,19 +40,19 @@ func NewAction(name string, fields ...Field) (Action, error) {
 	if name == "" {
 		return Action{}, errors.New("ami: invalid action: empty name")
 	}
-	if strings.ContainsAny(name, "\r\n") {
-		return Action{}, errors.New("ami: invalid action: name contains CR or LF")
+	if strings.ContainsAny(name, "\x00\r\n") {
+		return Action{}, errors.New("ami: invalid action: name contains NUL, CR, or LF")
 	}
 	for i, f := range fields {
 		switch {
 		case f.Key == "":
 			return Action{}, fmt.Errorf("ami: invalid action: field %d: empty key", i)
-		case strings.ContainsAny(f.Key, ":\r\n"):
-			return Action{}, fmt.Errorf("ami: invalid action: field %d: key contains a colon, CR, or LF", i)
+		case strings.ContainsAny(f.Key, ":\x00\r\n"):
+			return Action{}, fmt.Errorf("ami: invalid action: field %d: key contains a colon, NUL, CR, or LF", i)
 		case strings.EqualFold(f.Key, "Action"), strings.EqualFold(f.Key, "ActionID"):
 			return Action{}, fmt.Errorf("ami: invalid action: field %d: reserved key %q", i, f.Key)
-		case strings.ContainsAny(f.Value, "\r\n"):
-			return Action{}, fmt.Errorf("ami: invalid action: field %d: value contains CR or LF", i)
+		case strings.ContainsAny(f.Value, "\x00\r\n"):
+			return Action{}, fmt.Errorf("ami: invalid action: field %d: value contains NUL, CR, or LF", i)
 		}
 	}
 	return Action{name: name, fields: slices.Clone(fields)}, nil

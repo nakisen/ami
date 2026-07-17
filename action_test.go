@@ -37,16 +37,19 @@ func TestNewActionRejects(t *testing.T) {
 		wantHas string
 	}{
 		{"empty name", "", nil, "empty name"},
-		{"name with cr", "Ping\r", nil, "CR or LF"},
-		{"name with lf", "Ping\nInjected: x", nil, "CR or LF"},
+		{"name with cr", "Ping\r", nil, "NUL, CR, or LF"},
+		{"name with lf", "Ping\nInjected: x", nil, "NUL, CR, or LF"},
+		{"name with nul", "Originate\x00Redirect", nil, "NUL, CR, or LF"},
 		{"empty key", "Ping", []Field{{Key: "", Value: "v"}}, "empty key"},
 		{"colon in key", "Ping", []Field{{Key: "A:B", Value: "v"}}, "colon"},
-		{"cr in key", "Ping", []Field{{Key: "A\rB", Value: "v"}}, "colon, CR, or LF"},
-		{"lf in key", "Ping", []Field{{Key: "A\nB", Value: "v"}}, "colon, CR, or LF"},
+		{"cr in key", "Ping", []Field{{Key: "A\rB", Value: "v"}}, "colon, NUL, CR, or LF"},
+		{"lf in key", "Ping", []Field{{Key: "A\nB", Value: "v"}}, "colon, NUL, CR, or LF"},
+		{"nul in key", "Ping", []Field{{Key: "A\x00B", Value: "v"}}, "colon, NUL, CR, or LF"},
 		{"reserved action key", "Ping", []Field{{Key: "action", Value: "x"}}, "reserved"},
 		{"reserved actionid key", "Ping", []Field{{Key: "ACTIONID", Value: "x"}}, "reserved"},
-		{"cr in value", "Ping", []Field{{Key: "K", Value: "a\rb"}}, "CR or LF"},
-		{"lf injection in value", "Ping", []Field{{Key: "K", Value: "v\r\nEvents: on"}}, "CR or LF"},
+		{"cr in value", "Ping", []Field{{Key: "K", Value: "a\rb"}}, "NUL, CR, or LF"},
+		{"lf injection in value", "Ping", []Field{{Key: "K", Value: "v\r\nEvents: on"}}, "NUL, CR, or LF"},
+		{"nul truncation in value", "Ping", []Field{{Key: "Channel", Value: "PJSIP/a\x00, junk"}}, "NUL, CR, or LF"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

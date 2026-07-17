@@ -96,8 +96,10 @@ func TestAppendMessageValidation(t *testing.T) {
 		{"colon in key", []Field{{Key: "A:B", Value: "v"}}, ErrInvalidKey},
 		{"carriage return in key", []Field{{Key: "A\rB", Value: "v"}}, ErrInvalidKey},
 		{"line feed in key", []Field{{Key: "A\nB", Value: "v"}}, ErrInvalidKey},
+		{"nul in key", []Field{{Key: "A\x00B", Value: "v"}}, ErrInvalidKey},
 		{"carriage return in value", []Field{{Key: "K", Value: "a\rb"}}, ErrInvalidValue},
 		{"line feed in value", []Field{{Key: "K", Value: "a\nb"}}, ErrInvalidValue},
+		{"nul in value", []Field{{Key: "K", Value: "a\x00b"}}, ErrInvalidValue},
 		{
 			"header injection in value",
 			[]Field{{Key: "Action", Value: "Login\r\nInjected: x"}},

@@ -11,10 +11,13 @@ import (
 // extended slice. Validation completes before any byte is appended: on
 // error, dst is returned unchanged.
 //
-// Keys must be non-empty and free of colons, carriage returns, and line
-// feeds; values must be free of carriage returns and line feeds. That is
-// the full injection surface — semantic key hygiene belongs to the root
-// package. A message whose first field encodes "Response: Follows"
+// Keys must be non-empty and free of colons, NUL bytes, carriage
+// returns, and line feeds; values must be free of NUL bytes, carriage
+// returns, and line feeds. That is the full injection surface — semantic
+// key hygiene belongs to the root package; NUL joins the terminators
+// because C-based managers truncate fields at it, which would let a
+// frame reach the server as different fields than the ones encoded
+// here. A message whose first field encodes "Response: Follows"
 // re-parses under the legacy Command output framing rather than as the
 // encoded field sequence; synthesizing such a frame requires raw writes
 // by design.
@@ -27,10 +30,10 @@ func AppendMessage(dst []byte, fields []Field, lim Limits) ([]byte, error) {
 	}
 	total := 2 // the message-ending blank line
 	for _, f := range fields {
-		if f.Key == "" || strings.ContainsAny(f.Key, ":\r\n") {
+		if f.Key == "" || strings.ContainsAny(f.Key, ":\x00\r\n") {
 			return dst, ErrInvalidKey
 		}
-		if strings.ContainsAny(f.Value, "\r\n") {
+		if strings.ContainsAny(f.Value, "\x00\r\n") {
 			return dst, ErrInvalidValue
 		}
 		n := len(f.Key) + len(": ") + len(f.Value)
