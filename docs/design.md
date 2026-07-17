@@ -876,9 +876,11 @@ Required concurrency and lifecycle cases include:
 
 ## Canonical usage patterns
 
-Documentation cornerstones; runnable versions belong in `examples/`,
-including a deliberately minimal listen-to-events example a few lines long
-as the first-contact snippet:
+Documentation cornerstones; each has a self-contained runnable program in
+`examples/` (`listen` — the deliberately minimal first-contact snippet —
+plus `wallboard`, `reconnect`, `originate`, and `router`), offline by
+default against an amitest server, alongside a compile-checked
+package-level godoc `Example`:
 
 - **Snapshot plus live:** disable Login events, create an explicit
   subscription, enable the event mask with `Do`, start a `List` with the

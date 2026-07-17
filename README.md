@@ -48,7 +48,28 @@ evidence. The short version of what this library does differently:
 | `internal/demux` — correlation state machine ([design note](docs/demux.md)) | landed |
 | `Client` — session, correlation, keepalive | landed |
 | `amitest` — public fake AMI server | landed |
-| `examples/` — runnable usage patterns | next up |
+| `examples/` — runnable usage patterns | landed |
+
+## Examples
+
+Every program in [`examples/`](examples/) demonstrates one canonical
+usage pattern and runs offline out of the box: with no flags it starts
+its own [`amitest`](amitest/) fake server, and `-addr`, `-username`,
+and `-secret` point it at a real Asterisk.
+
+- [`listen`](examples/listen/main.go) — minimal first contact: dial,
+  subscribe, enable the event mask, consume off the read loop.
+- [`wallboard`](examples/wallboard/main.go) — snapshot plus live: a
+  `QueueStatus` list staged through clean completion, live queue events
+  reconciled on top, honest `ErrLagged` recovery.
+- [`reconnect`](examples/reconnect/main.go) — application-owned
+  reconnect: a backoff ladder that resets after a healthy session, one
+  fresh client generation per dial.
+- [`originate`](examples/originate/main.go) — async completion: an
+  `OriginateResponse` follow subscription registered atomically with
+  `Do`.
+- [`router`](examples/router/main.go) — hook-style handling as a tiny
+  application-space registry over `Consume`.
 
 ## Requirements
 

@@ -765,3 +765,35 @@ without proposing another cause. The impossible-response case remains an
 exception: its correlation fatality is already committed atomically by ticket
 resolution and is returned unchanged. Writer ownership stays held through the
 handoff so no later writer can manufacture a competing generic cause.
+
+## 2026-07-17 — v0 ships canonical examples instead of new UX surface
+
+A pre-`examples/` UX review asked whether the low-level layers should be
+wrapped into hidden hooks. The ruling: the v0 public API is complete and
+gains no new surface. The canonical usage patterns land instead as
+self-contained runnable programs under `examples/` — `listen`,
+`wallboard`, `reconnect`, `originate`, `router` — plus a compile-checked
+package-level godoc `Example`. Every program runs offline by default by
+starting its own amitest server, and `-addr`/`-username`/`-secret` point
+it at a real endpoint; the module gate compiles them all, so the
+examples double as pre-tag end-to-end validation of the public surface.
+
+An asynchronous `OnEvent` registry was re-examined at the user's
+invitation and stays out, as design.md has recorded since v0's design. A
+hidden dispatcher does not remove complexity; it relocates it to where
+errors have no address: the stream's terminal result loses its return
+path, handler panics land on a library goroutine that must invent
+policy, and client death turns into silent hook silence. The layering
+already hides mechanism — wire framing, demultiplexing — and
+deliberately surfaces consequences — `ErrLagged`, root causes,
+outcome-unknown; a hook layer would invert that. The `router` example
+demonstrates the pattern in a few dozen application-space lines over
+`Consume`, which is also the standing bar for any future helper: it must
+be buildable purely on the public API, or the gap it papers over is a
+public-API bug to fix instead.
+
+Two documentation items were considered and deferred pending external
+demand: a retry-safety recipe section (definitely-not-sent versus
+may-have-executed) and an amitest-centered consumer-testing guide. The
+godoc contracts already state those facts; both items are
+discoverability polish, not missing information.
