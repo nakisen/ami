@@ -43,6 +43,13 @@ type Client struct {
 	done   chan struct{}
 	wg     sync.WaitGroup
 
+	// inflight counts dispatches between admission and the end of their
+	// machine bookkeeping — write resolution, adoption or release. Done
+	// closes only after it drains, so no correlation state changes after
+	// Done; holds are taken under the session lock atomically with the
+	// liveness check, so none can start after termination.
+	inflight sync.WaitGroup
+
 	// writeSem serializes action writes. Its wait queue is FIFO, so
 	// once a due keepalive Ping is waiting, later public writes cannot
 	// pass it.
@@ -168,6 +175,9 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	go func() {
 		c.wg.Wait()
+		// The workers only stop after termination committed, so no new
+		// in-flight hold can start once this wait begins.
+		c.inflight.Wait()
 		close(c.done)
 	}()
 	c.diag.info("session ready", "keepalive", !ka.Disabled)
@@ -280,9 +290,11 @@ func (c *Client) Banner() string {
 }
 
 // Done returns a channel that closes when the client has terminated:
-// the reader, keepalive, and expiry workers have stopped, no
-// correlation or terminal-result state can change, and every admitted
-// waiter has been made runnable with its committed result. An
+// the reader, keepalive, and expiry workers have stopped, every
+// in-flight Do and StartList has finished its correlation bookkeeping,
+// no correlation or terminal-result state can change, and every
+// admitted waiter has been made runnable with its committed result.
+// Done does not wait for caller code to observe those returns. An
 // already-terminal handle may still drain its own bounded queue after
 // Done.
 func (c *Client) Done() <-chan struct{} {

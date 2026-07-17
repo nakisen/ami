@@ -614,3 +614,17 @@ declared check that cannot run is a failure, not a silent downgrade.
 `ListSpec.CountFields` is also bounded (16 names, 1 KiB total,
 validated before dispatch) because the extractor runs on the read
 loop against every completion event.
+
+## 2026-07-17 — Done waits for in-flight dispatch bookkeeping
+
+design.md's lifecycle contract — before `Done` closes, the active
+writer has stopped and no correlation state can change — was not what
+the implementation delivered: `Done` waited only for the reader,
+expiry, and keepalive workers, while a public `Do`/`StartList` on a
+caller goroutine could still run `CommitWrite`, branch adoption, or
+release after `Done` closed (harmless on the dead machine, but a
+contract violation). Dispatches now take an in-flight hold under the
+session lock, atomically with the liveness check, and release it after
+their last machine touch; the done-closer drains those holds after the
+workers exit. `Done` still does not wait for caller code to observe
+the returns — only for the bookkeeping itself.

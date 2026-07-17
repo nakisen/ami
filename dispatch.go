@@ -90,7 +90,10 @@ func (c *Client) Do(ctx context.Context, action Action, opts ...DoOption) (DoRes
 		}
 	}
 	id := c.newActionID(demux.KindRequest)
-	cpl, err := c.dispatch(ctx, action, id, demux.KindRequest, admit)
+	cpl, release, err := c.dispatch(ctx, action, id, demux.KindRequest, admit)
+	// Released after every machine touch below — follow adoption or
+	// release included — so Done cannot close in the middle of them.
+	defer release()
 	if err != nil {
 		return DoResult{}, err
 	}
@@ -174,7 +177,10 @@ func (c *Client) StartList(ctx context.Context, action Action, spec ListSpec) (*
 		Count:         countExtractor(spec.CountFields),
 	}}
 	id := c.newActionID(demux.KindList)
-	cpl, err := c.dispatch(ctx, action, id, demux.KindList, admit)
+	cpl, release, err := c.dispatch(ctx, action, id, demux.KindList, admit)
+	// Released after every machine touch below — list adoption or
+	// release included — so Done cannot close in the middle of them.
+	defer release()
 	if err != nil {
 		return nil, err
 	}
@@ -201,33 +207,42 @@ func (c *Client) StartList(ctx context.Context, action Action, spec ListSpec) (*
 // registration before the first byte, the bounded write with its
 // resolution, and the response wait linearized against cancellation.
 // It returns a completion — delivered or death — with every other
-// obligation already resolved, or a final public error.
-func (c *Client) dispatch(ctx context.Context, action Action, id string, kind demux.Kind, admit demux.AdmitOptions[Message]) (demux.Completion[Message], error) {
+// obligation already resolved, or a final public error. The returned
+// release function is never nil: once the caller's machine bookkeeping
+// for this dispatch is complete, calling it drops the in-flight hold
+// that keeps Done from closing early.
+func (c *Client) dispatch(ctx context.Context, action Action, id string, kind demux.Kind, admit demux.AdmitOptions[Message]) (demux.Completion[Message], func(), error) {
 	var zero demux.Completion[Message]
+	noop := func() {}
 	if err := c.admitWriter(ctx); err != nil {
-		return zero, err
+		return zero, noop, err
 	}
 
 	c.mu.Lock()
 	if c.terminated {
 		c.mu.Unlock()
 		c.releaseWriter()
-		return zero, ErrClosed
+		return zero, noop, ErrClosed
 	}
 	tkt, err := c.machine.Admit(id, kind, admit)
 	if err != nil {
 		c.mu.Unlock()
 		c.releaseWriter()
-		return zero, c.admitError(err, id)
+		return zero, noop, c.admitError(err, id)
 	}
+	// Taken under the lock, atomically with the liveness check: from
+	// here to release, Done waits for this dispatch's bookkeeping.
+	c.inflight.Add(1)
 	w := make(chan demux.Completion[Message], 1)
 	c.waiters[tkt] = w
 	c.mu.Unlock()
 
+	release := c.inflight.Done
 	if err := c.writeAdmitted(ctx, action, id, tkt, w, admit); err != nil {
-		return zero, err
+		return zero, release, err
 	}
-	return c.await(ctx, id, tkt, w)
+	cpl, err := c.await(ctx, id, tkt, w)
+	return cpl, release, err
 }
 
 // writeAdmitted performs the bounded socket write and resolves the

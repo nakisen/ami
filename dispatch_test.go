@@ -671,6 +671,44 @@ func TestStartListContextAbandon(t *testing.T) {
 	mustDo(t, c, s, "Ping")
 }
 
+// TestDoneWaitsForInflightDispatch pins the quiescence barrier: Done
+// must not close while a dispatch still holds its machine bookkeeping.
+func TestDoneWaitsForInflightDispatch(t *testing.T) {
+	c, _ := dialTest(t, nil)
+	c.mu.Lock()
+	c.inflight.Add(1) // a dispatch mid-bookkeeping
+	c.mu.Unlock()
+	c.Close()
+	select {
+	case <-c.Done():
+		t.Fatal("Done closed while an in-flight dispatch held its bookkeeping")
+	case <-time.After(50 * time.Millisecond):
+	}
+	c.inflight.Done()
+	waitDone(t, c.Done(), "client after the in-flight hold released")
+}
+
+// TestClientDeathReleasesInflightDispatch drives the barrier end to
+// end: a dispatch parked awaiting its response is completed by client
+// death, finishes its bookkeeping, and Done still closes.
+func TestClientDeathReleasesInflightDispatch(t *testing.T) {
+	c, s := dialTest(t, nil)
+	res := make(chan error, 1)
+	go func() {
+		act, _ := NewAction("Slow")
+		_, err := c.Do(context.Background(), act)
+		res <- err
+	}()
+	s.readAction() // fully written, awaiting its response
+	c.Close()
+	err := <-res
+	var re *RequestError
+	if !errors.As(err, &re) || re.Phase != PhaseResponse || !re.MayHaveExecuted() {
+		t.Fatalf("Do() at death = %v, want outcome-unknown RequestError", err)
+	}
+	waitDone(t, c.Done(), "client that died with a dispatch in flight")
+}
+
 // waitConsumerParked waits until the handle's consumer slot is taken
 // and gives the consumer a beat to reach its park point, so a
 // subsequent Close provably races a parked Next rather than one that
