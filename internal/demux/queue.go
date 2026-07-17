@@ -33,8 +33,20 @@ func (q *queue[T]) pop() (T, int) {
 	q.entries[q.head] = qentry[T]{} // release the payload reference
 	q.head++
 	q.bytes -= e.size
-	if q.head == len(q.entries) {
+	switch {
+	case q.head == len(q.entries):
 		q.entries = q.entries[:0]
+		q.head = 0
+	case q.head > 32 && q.head >= len(q.entries)-q.head:
+		// A queue that never fully drains would otherwise grow its
+		// backing array without bound under sustained churn. Once the
+		// dead prefix reaches the live tail's length, slide the tail to
+		// the front: at least head pops funded the copy of len-head
+		// entries, so the cost stays amortized O(1) per pop, and the
+		// backing length stays within about twice the live peak.
+		n := copy(q.entries, q.entries[q.head:])
+		clear(q.entries[n:])
+		q.entries = q.entries[:n]
 		q.head = 0
 	}
 	return e.msg, e.size
