@@ -29,7 +29,39 @@ type Reader struct {
 // NewReader returns a Reader parsing from r under lim. The caller is
 // responsible for validating lim; a non-positive limit fails closed.
 func NewReader(r io.Reader, lim Limits) *Reader {
-	return &Reader{br: bufio.NewReader(r), lim: lim}
+	rd := &Reader{lim: lim}
+	rd.br = bufio.NewReader(&frameStartReader{src: r, r: rd})
+	return rd
+}
+
+// frameStart marks the first consumed byte of a new frame — at most
+// once per frame — and fires the frame-start hook.
+func (r *Reader) frameStart() {
+	if r.dirty {
+		return
+	}
+	r.dirty = true
+	if r.onFrameStart != nil {
+		r.onFrameStart()
+	}
+}
+
+// frameStartReader taps the byte stream below the buffered reader: the
+// moment any byte of a new frame arrives from the transport the frame
+// clock starts, even when the line it belongs to never completes. Bytes
+// already buffered from an earlier transport read are covered by the
+// readLine entry check instead.
+type frameStartReader struct {
+	src io.Reader
+	r   *Reader
+}
+
+func (f *frameStartReader) Read(p []byte) (int, error) {
+	n, err := f.src.Read(p)
+	if n > 0 {
+		f.r.frameStart()
+	}
+	return n, err
 }
 
 // Dirty reports whether bytes of an unreturned banner or message have
@@ -173,14 +205,14 @@ func (r *Reader) readLegacyCommand(m *msg) ([]Field, error) {
 // until the next read.
 func (r *Reader) readLine(max int, errTooLong error) ([]byte, int, error) {
 	r.buf = r.buf[:0]
+	if r.br.Buffered() > 0 {
+		// Bytes of this frame already sit in the buffer from an earlier
+		// transport read; consuming them starts the frame now. Bytes
+		// arriving from the stream start it inside frameStartReader.
+		r.frameStart()
+	}
 	for {
 		frag, err := r.br.ReadSlice('\n')
-		if len(frag) > 0 && !r.dirty {
-			r.dirty = true
-			if r.onFrameStart != nil {
-				r.onFrameStart()
-			}
-		}
 		r.buf = append(r.buf, frag...)
 		if err == bufio.ErrBufferFull {
 			// No terminator yet: bound the accumulation before reading

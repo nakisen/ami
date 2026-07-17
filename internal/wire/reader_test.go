@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 )
 
 // testLimits returns limits generous enough that ordinary test messages
@@ -508,6 +509,43 @@ func TestLimitsValidate(t *testing.T) {
 				t.Fatalf("Validate() = %v, want error naming %s", err, tt.name)
 			}
 		})
+	}
+}
+
+// TestReaderFrameStartHookFiresMidLine pins the first-byte contract:
+// the hook fires when the frame's first byte is consumed from the
+// stream, not when its first line completes. After writing a single
+// byte of a still-incomplete line, the hook must fire without any
+// further input.
+func TestReaderFrameStartHookFiresMidLine(t *testing.T) {
+	pr, pw := io.Pipe()
+	r := NewReader(pr, testLimits())
+	fired := make(chan struct{}, 1)
+	r.SetFrameStartHook(func() {
+		select {
+		case fired <- struct{}{}:
+		default:
+			t.Error("frame-start hook fired more than once for one frame")
+		}
+	})
+	msgCh := make(chan error, 1)
+	go func() {
+		_, err := r.ReadMessage()
+		msgCh <- err
+	}()
+	if _, err := pw.Write([]byte("E")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-fired:
+	case <-time.After(5 * time.Second):
+		t.Fatal("frame-start hook did not fire on the first byte of an incomplete line")
+	}
+	if _, err := pw.Write([]byte("vent: X\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-msgCh; err != nil {
+		t.Fatalf("ReadMessage() = %v", err)
 	}
 }
 

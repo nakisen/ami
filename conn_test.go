@@ -360,6 +360,41 @@ func TestConnPartialFrameAgeExpires(t *testing.T) {
 	}
 }
 
+// TestConnPartialFrameAgeArmsAtFirstByte pins the first-byte contract
+// end to end: a single byte of a never-completing first line — the
+// banner included — must start the frame clock, so the read fails on
+// the age instead of hanging forever on a stalled peer.
+func TestConnPartialFrameAgeArmsAtFirstByte(t *testing.T) {
+	tests := []struct {
+		name string
+		read func(*Conn) error
+	}{
+		{"banner", func(c *Conn) error {
+			_, err := c.ReadBanner(context.Background())
+			return err
+		}},
+		{"message", func(c *Conn) error {
+			_, err := c.ReadMessage(context.Background())
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, server := newPipeConn(t, WireLimits{MaxPartialFrameAge: 50 * time.Millisecond})
+			resCh := make(chan error, 1)
+			go func() { resCh <- tt.read(c) }()
+			if _, err := server.Write([]byte("A")); err != nil {
+				t.Fatalf("priming the first byte: %v", err)
+			}
+			err := <-resCh
+			var pe *ProtocolError
+			if !errors.As(err, &pe) || pe.Category != "limit" || pe.Dimension != "MaxPartialFrameAge" {
+				t.Fatalf("read = %v, want limit/MaxPartialFrameAge", err)
+			}
+		})
+	}
+}
+
 func TestConnPartialFrameAgeIdleUnaffected(t *testing.T) {
 	client, server := net.Pipe()
 	sc := newSignalConn(client)
