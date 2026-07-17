@@ -83,6 +83,60 @@ func TestListEventListHeaderCompletion(t *testing.T) {
 	}
 }
 
+// TestListOverflowOnTerminalMarkKeepsEvidence pins the routing order:
+// when the event carrying the terminal mark itself overflows the
+// observed budget, the mark still counts as slot evidence, so a fully
+// evidenced list settles outright instead of leaving a drain record
+// waiting for a second mark — one that could only expire fatally and
+// kill a healthy client over a single list's overflow.
+func TestListOverflowOnTerminalMarkKeepsEvidence(t *testing.T) {
+	m := newMachine(t)
+	o := listOpts()
+	o.Count = nil
+	o.ObservedBytes = 25 // two 10-byte items fit; the third event overflows
+	tk := startList(t, m, "l1", o)
+	route(t, m, resp("l1", KindList, true), 0)
+	id := m.AdoptList(tk)
+	route(t, m, evOwn("item", "l1", KindList), 1)
+	route(t, m, evOwn("item", "l1", KindList), 2)
+
+	// The completion mark itself tips the observed budget: the list
+	// fails with overflow, but the mark has been seen.
+	fx := route(t, m, evMark("done", "l1", MarkComplete), 3)
+	if !woken(fx, id) {
+		t.Fatal("failed list not woken")
+	}
+	takeState(t, m, id, TakeTerminal, ReasonOverflow)
+
+	// Response and mark are both in evidence: no drain record remains
+	// and nothing is armed to expire.
+	wantRetirement(t, m, 0, 0)
+	if _, ok := m.NextDeadline(); ok {
+		t.Fatal("a drain record survived a fully evidenced overflow")
+	}
+	m.Close(id)
+}
+
+// TestListOverflowOnEarlyTerminalMarkAwaitsOnlyResponse is the
+// pre-response variant: the overflowing mark is evidence, so the drain
+// record waits only for the response and releases with it.
+func TestListOverflowOnEarlyTerminalMarkAwaitsOnlyResponse(t *testing.T) {
+	m := newMachine(t)
+	o := listOpts()
+	o.Count = nil
+	o.ObservedBytes = 15 // the second event overflows
+	tk := startList(t, m, "l1", o)
+	route(t, m, evOwn("item", "l1", KindList), 1)
+	route(t, m, evMark("done", "l1", MarkComplete), 2) // overflows; mark is evidence
+	wantRetirement(t, m, 0, 1)                         // the record awaits the response only
+
+	route(t, m, resp("l1", KindList, true), 0)
+	wantRetirement(t, m, 0, 0) // released; nothing can expire
+	id := m.AdoptList(tk)
+	takeState(t, m, id, TakeTerminal, ReasonOverflow)
+	m.Close(id)
+}
+
 func TestListEarlyCompletionBeforeResponse(t *testing.T) {
 	m := newMachine(t)
 	tk := startList(t, m, "l1", listOpts("done"))

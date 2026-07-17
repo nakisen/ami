@@ -205,6 +205,20 @@ func (m *Machine[T]) routeListEvent(l *list[T], env Envelope, msg T, fx *Effects
 	l.observed += env.Size
 	over := l.observed > l.observedCap
 
+	cancel := env.Mark == MarkCancelled
+	complete := env.Mark == MarkComplete
+	if !complete && !cancel {
+		_, complete = l.completions[env.Name]
+	}
+	if cancel || complete {
+		// Terminal evidence arrives with the event that carries it, even
+		// when that same event overflows the observed budget: the slot
+		// settlement in failList must not convert into a drain record
+		// waiting for a second mark the remote will never send — that
+		// record could only expire and kill a healthy client.
+		l.markSeen = true
+	}
+
 	if l.phase == lBufferedComplete || l.phase == lBufferedCancelled {
 		// Traffic after a buffered terminal mark, before the response:
 		// absorbed and counted, never delivered.
@@ -219,22 +233,14 @@ func (m *Machine[T]) routeListEvent(l *list[T], env Envelope, msg T, fx *Effects
 		return
 	}
 
-	cancel := env.Mark == MarkCancelled
-	complete := env.Mark == MarkComplete
-	if !complete && !cancel {
-		_, complete = l.completions[env.Name]
-	}
-
 	switch {
 	case cancel:
-		l.markSeen = true
 		if l.phase == lBuffering {
 			l.phase = lBufferedCancelled
 		} else {
 			m.commitListCancelled(l, fx)
 		}
 	case complete:
-		l.markSeen = true
 		// A declared count, when configured and present, is verified
 		// against the items observed before anything commits.
 		if l.count != nil {
