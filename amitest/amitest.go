@@ -33,12 +33,20 @@
 //	}
 //
 // Built-in behavior is limited to what every session needs: the
-// banner, the authentication phase, and default Ping and Logoff
-// handlers that answer like Asterisk so keepalives and shutdown flows
-// work unscripted. Each default can be replaced or removed through
-// [Server.HandleAction]. Beyond that the server sends nothing on its
-// own — no FullyBooted after login, no periodic events — so a session
-// carries exactly the traffic its scenario scripted.
+// banner, the authentication phase, and default Ping, Logoff, and
+// Events handlers that answer like Asterisk so keepalives, shutdown
+// flows, and event-mask changes work unscripted. Each default can be
+// replaced or removed through [Server.HandleAction]. Beyond that the
+// server sends nothing on its own — no FullyBooted after login, no
+// periodic events — so a session carries exactly the traffic its
+// scenario scripted.
+//
+// Sessions carry an Asterisk-like event mask: the Login action's
+// Events field sets it and the built-in Events action updates it, and
+// [Server.Event] delivers only to sessions whose mask is on. The root
+// client's zero configuration logs in with Events: off, so a consumer
+// that subscribes without enabling events misses broadcasts here
+// exactly as it would against a real Asterisk.
 //
 // # Synchronization
 //
@@ -155,6 +163,7 @@ func NewServer(cfg Config) *Server {
 		handlers: map[string]func(*Call){
 			"ping":   defaultPing,
 			"logoff": defaultLogoff,
+			"events": defaultEvents,
 		},
 		sessions: map[*session]struct{}{},
 	}
@@ -172,6 +181,21 @@ func defaultPing(c *Call) {
 func defaultLogoff(c *Call) {
 	c.Respond("Goodbye")
 	c.Hangup()
+}
+
+// defaultEvents updates the session's event mask like Asterisk: only
+// an explicit EventMask of off disables unsolicited delivery; on and
+// class lists enable it.
+func defaultEvents(c *Call) {
+	on := !strings.EqualFold(c.Get("EventMask"), "off")
+	c.sess.srv.mu.Lock()
+	c.sess.events = on
+	c.sess.srv.mu.Unlock()
+	if on {
+		c.Respond("Success", "Events", "On")
+		return
+	}
+	c.Respond("Success", "Events", "Off")
 }
 
 // Addr returns the server's listen address in host:port form, ready
@@ -201,35 +225,42 @@ func (s *Server) HandleAction(name string, h func(*Call)) {
 	s.handlers[key] = h
 }
 
-// Event sends one unsolicited event to every authenticated session.
-// kv lists the event's extra fields as ordered key/value pairs;
+// Event sends one unsolicited event to every authenticated session
+// whose event mask is on: a session that logged in with Events: off —
+// the root client's zero-configuration default — receives nothing
+// here until it enables events, exactly like a real Asterisk. kv
+// lists the event's extra fields as ordered key/value pairs;
 // duplicate keys are legal. The Event envelope field is composed here
 // — do not pass it in kv. Correlated events belong to [Call.Event],
-// which echoes the action's ActionID.
+// which echoes the action's ActionID and ignores the mask.
 func (s *Server) Event(name string, kv ...string) {
-	s.broadcast(encodeFrame(eventFields(name, "", kv)))
+	s.broadcast(encodeFrame(eventFields(name, "", kv)), true)
 }
 
 // Raw writes b verbatim to every authenticated session, for malformed
-// or hand-crafted traffic the frame builders refuse to compose.
-// Several frames concatenated into one Raw write exercise coalesced
-// delivery, the counterpart of Config.WriteChunk fragmentation.
+// or hand-crafted traffic the frame builders refuse to compose. Raw
+// is a wire tool, not a simulation of unsolicited delivery: it
+// bypasses the event mask. Several frames concatenated into one Raw
+// write exercise coalesced delivery, the counterpart of
+// Config.WriteChunk fragmentation.
 func (s *Server) Raw(b []byte) {
-	s.broadcast(b)
+	s.broadcast(b, false)
 }
 
 // broadcast writes one pre-encoded chunk of bytes to every
-// authenticated session. Unauthenticated sessions are excluded so
+// authenticated session — masked deliveries only to sessions whose
+// event mask is on. Unauthenticated sessions are always excluded so
 // background traffic can never interleave with a login exchange: like
 // a real Asterisk, the fake sends an unauthenticated session nothing
 // unsolicited.
-func (s *Server) broadcast(b []byte) {
+func (s *Server) broadcast(b []byte, masked bool) {
 	s.mu.Lock()
 	live := make([]*session, 0, len(s.sessions))
 	for sess := range s.sessions {
-		if sess.authed {
-			live = append(live, sess)
+		if !sess.authed || (masked && !sess.events) {
+			continue
 		}
+		live = append(live, sess)
 	}
 	s.mu.Unlock()
 	for _, sess := range live {

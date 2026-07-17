@@ -49,9 +49,12 @@ type session struct {
 	// goroutines interleave at frame granularity.
 	wmu sync.Mutex
 
-	// authed marks login completion; guarded by srv.mu so broadcasts
-	// snapshot it consistently.
+	// authed marks login completion and events the session's event
+	// mask; both are guarded by srv.mu so broadcasts snapshot them
+	// consistently. Like Asterisk, a session whose mask is off receives
+	// no unsolicited events; correlated replies are unaffected.
 	authed bool
+	events bool
 }
 
 // serve runs one session to completion: banner, authentication, then
@@ -103,9 +106,13 @@ func (sess *session) authenticate(r *wire.Reader) bool {
 				return false
 			}
 			// Mark before responding: once the client holds the success
-			// response, broadcasts must already see this session.
+			// response, broadcasts must already see this session. The
+			// Login action's Events field sets the initial mask, like
+			// Asterisk: only an explicit off disables it, and an absent
+			// field leaves events on.
 			sess.srv.mu.Lock()
 			sess.authed = true
+			sess.events = !strings.EqualFold(call.Get("Events"), "off")
 			sess.srv.mu.Unlock()
 			call.Respond("Success", "Message", "Authentication accepted")
 			return true
@@ -117,20 +124,23 @@ func (sess *session) authenticate(r *wire.Reader) bool {
 	}
 }
 
-// checkLogin verifies a Login action: an MD5 Key when one was
-// challenged for, the plain Secret otherwise. Usernames match
-// case-insensitively like the Asterisk manager; secrets exactly.
+// checkLogin verifies a Login action. Like Asterisk, the MD5 path
+// requires the Login action itself to declare AuthType: MD5 — a Key
+// without it falls through to the plaintext comparison — and an MD5
+// login only verifies after a Challenge was issued on this session.
+// Usernames match case-insensitively like the Asterisk manager;
+// secrets exactly.
 func (sess *session) checkLogin(call *Call, issued bool) bool {
 	cfg := sess.srv.cfg
 	if !strings.EqualFold(call.Get("Username"), cfg.Username) {
 		return false
 	}
-	if key := call.Get("Key"); key != "" {
+	if strings.EqualFold(call.Get("AuthType"), "MD5") {
 		if !issued {
 			return false
 		}
 		sum := md5.Sum([]byte(challengeText + cfg.Secret))
-		return key == hex.EncodeToString(sum[:])
+		return call.Get("Key") == hex.EncodeToString(sum[:])
 	}
 	return call.Get("Secret") == cfg.Secret
 }
@@ -153,18 +163,34 @@ func (sess *session) dispatch(call *Call) {
 
 // readCall reads one inbound frame and shapes it as a received action:
 // the first Action value becomes the name, the first ActionID value
-// the id, and every other field stays in wire order.
+// the id, and every other field stays in wire order. A repeated Action
+// or ActionID envelope field is a scenario violation — a conforming
+// client never sends one — recorded for Err while the frame still
+// dispatches on its first values.
 func (sess *session) readCall(r *wire.Reader) (*Call, error) {
 	raw, err := r.ReadMessage()
 	if err != nil {
 		return nil, err
 	}
 	call := &Call{sess: sess}
+	var seenAction, seenID bool
 	for _, f := range raw {
 		switch {
-		case call.name == "" && strings.EqualFold(f.Key, "Action"):
+		case strings.EqualFold(f.Key, "Action"):
+			if seenAction {
+				sess.srv.violate("duplicate Action envelope field in one frame")
+				call.fields = append(call.fields, f)
+				continue
+			}
+			seenAction = true
 			call.name = f.Value
-		case call.id == "" && strings.EqualFold(f.Key, "ActionID"):
+		case strings.EqualFold(f.Key, "ActionID"):
+			if seenID {
+				sess.srv.violate("duplicate ActionID envelope field in one frame")
+				call.fields = append(call.fields, f)
+				continue
+			}
+			seenID = true
 			call.id = f.Value
 		default:
 			call.fields = append(call.fields, f)

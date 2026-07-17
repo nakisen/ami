@@ -628,3 +628,25 @@ session lock, atomically with the liveness check, and release it after
 their last machine touch; the done-closer drains those holds after the
 workers exit. `Done` still does not wait for caller code to observe
 the returns — only for the bookkeeping itself.
+
+## 2026-07-17 — amitest models the event mask and exact login envelopes
+
+The fake delivered `Server.Event` broadcasts to every authenticated
+session regardless of the Login `Events` field, so a consumer using
+the root client's zero configuration — which logs in with
+`Events: off` — passed its amitest suite while a real Asterisk would
+have sent it nothing unsolicited. Green tests for a broken startup
+flow are the exact failure class a fake exists to catch:
+
+- **Sessions carry an Asterisk-like event mask.** Login's `Events`
+  field sets it (only an explicit `off` disables; absent means on,
+  like Asterisk), a new built-in `Events` action handler updates it,
+  and `Server.Event` delivers only to sessions whose mask is on.
+  `Call.Event` (correlated) and `Server.Raw` (a wire tool, not a
+  simulation) bypass the mask.
+- **MD5 login requires `AuthType: MD5` on the Login action**, like
+  Asterisk's authenticator; a Key without it falls to the plaintext
+  path and is rejected.
+- **A repeated `Action` or `ActionID` envelope field in one inbound
+  frame is a recorded violation** — a conforming client never sends
+  one — while the frame still dispatches on its first values.

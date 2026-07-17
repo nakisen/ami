@@ -7,6 +7,8 @@ package amitest_test
 import (
 	"bufio"
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -217,7 +219,10 @@ func TestSnapshotPlusLiveWallboard(t *testing.T) {
 		srv.Event("QueueMemberStatus", "Queue", "synthetic-support", "Interface", "PJSIP/synthetic-101", "Status", "6")
 		call.Event("QueueStatusComplete", "EventList", "Complete")
 	})
-	c := dialServer(t, srv, nil)
+	// The wallboard wants live events, so it must log in with them on:
+	// the default Events: off would mask the broadcasts, here and on a
+	// real Asterisk alike.
+	c := dialServer(t, srv, func(cfg *ami.Config) { cfg.EventMask = "on" })
 
 	sub, err := c.Subscribe(ami.MatchEvents("QueueMemberStatus"))
 	if err != nil {
@@ -252,6 +257,113 @@ func TestSnapshotPlusLiveWallboard(t *testing.T) {
 		if ev.Name() != "QueueMemberStatus" || ev.Get("Status") != want {
 			t.Errorf("live event = %s status %q, want QueueMemberStatus status %q", ev.Name(), ev.Get("Status"), want)
 		}
+	}
+}
+
+// TestEventMaskGatesBroadcasts pins the Asterisk-like event mask: the
+// root client's zero-configuration login sends Events: off, so a
+// consumer that subscribes without enabling events misses broadcasts
+// here exactly as it would in production — and the built-in Events
+// action turns them on mid-session.
+func TestEventMaskGatesBroadcasts(t *testing.T) {
+	srv := newServer(t, amitest.Config{})
+	c := dialServer(t, srv, nil) // zero config: Events: off
+	sub, err := c.Subscribe(ami.MatchEvents("PeerStatus"))
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	defer sub.Close()
+
+	// Masked: never written to this session.
+	srv.Event("PeerStatus", "Peer", "PJSIP/masked")
+
+	res := mustDo(t, c, "Events", ami.Field{Key: "EventMask", Value: "on"})
+	if got := res.Response.Get("Events"); got != "On" {
+		t.Errorf("Events response = %q, want On", got)
+	}
+
+	srv.Event("PeerStatus", "Peer", "PJSIP/visible")
+	ev, err := sub.Next(context.Background())
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if got := ev.Get("Peer"); got != "PJSIP/visible" {
+		t.Fatalf("first delivered event Peer = %q: the masked broadcast leaked", got)
+	}
+}
+
+// skipFrame reads and discards one server frame up to its blank line.
+func skipFrame(t *testing.T, br *bufio.Reader) {
+	t.Helper()
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("frame read: %v", err)
+		}
+		if line == "\r\n" {
+			return
+		}
+	}
+}
+
+// TestMD5LoginRequiresAuthType pins login fidelity: like Asterisk, a
+// Login carrying a Key but no AuthType: MD5 falls to the plaintext
+// path and is rejected.
+func TestMD5LoginRequiresAuthType(t *testing.T) {
+	srv := newServer(t, amitest.Config{})
+	conn, err := net.Dial("tcp", srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatalf("banner read: %v", err)
+	}
+	if _, err := conn.Write([]byte("Action: Challenge\r\nAuthType: MD5\r\nActionID: 1\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	skipFrame(t, br) // the challenge response; the challenge text is fixed
+
+	sum := md5.Sum([]byte("112233445566" + amitest.DefaultSecret))
+	login := "Action: Login\r\nUsername: " + amitest.DefaultUsername +
+		"\r\nKey: " + hex.EncodeToString(sum[:]) + "\r\nActionID: 2\r\n\r\n"
+	if _, err := conn.Write([]byte(login)); err != nil {
+		t.Fatal(err)
+	}
+	reply, _ := io.ReadAll(br) // rejection, then hangup
+	if !strings.Contains(string(reply), "Response: Error") {
+		t.Fatalf("AuthType-less Key login reply = %q, want an Error response", reply)
+	}
+	// A rejected login is a legitimate scenario: the strict cleanup on
+	// srv asserts no violation was recorded.
+}
+
+// TestDuplicateEnvelopeViolation: a conforming client never repeats
+// the Action or ActionID envelope fields in one frame; the fake
+// records the repeat while still dispatching on the first values.
+func TestDuplicateEnvelopeViolation(t *testing.T) {
+	srv := amitest.NewServer(amitest.Config{})
+	conn, err := net.Dial("tcp", srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatalf("banner read: %v", err)
+	}
+	login := "Action: Login\r\nUsername: " + amitest.DefaultUsername +
+		"\r\nSecret: " + amitest.DefaultSecret +
+		"\r\nActionID: a\r\nActionID: b\r\n\r\n"
+	if _, err := conn.Write([]byte(login)); err != nil {
+		t.Fatal(err)
+	}
+	skipFrame(t, br) // login still succeeds on the first ActionID
+	conn.Close()
+
+	if err := srv.Close(); err == nil || !strings.Contains(err.Error(), "duplicate ActionID") {
+		t.Fatalf("Close() = %v, want the duplicate-envelope violation", err)
 	}
 }
 
