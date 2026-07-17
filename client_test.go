@@ -459,6 +459,18 @@ func TestEventMaskDefaultIsOffAndBannerRetained(t *testing.T) {
 	}
 }
 
+// TestLoginScrubsSecretFromWriteBuffer pins the credential-hygiene
+// contract: after Dial, the library's only long-lived copy of the
+// plain-auth secret — the connection's reused encode buffer — has been
+// zeroed to its full capacity.
+func TestLoginScrubsSecretFromWriteBuffer(t *testing.T) {
+	c, _ := dialTest(t, nil)
+	buf := c.conn.wbuf[:cap(c.conn.wbuf)]
+	if bytes.Contains(buf, []byte("synthetic-secret")) {
+		t.Fatal("the login secret survives in the connection's write buffer")
+	}
+}
+
 // drainDeadline guards tests that wait on Done without synctest.
 func waitDone(t *testing.T, done <-chan struct{}, what string) {
 	t.Helper()

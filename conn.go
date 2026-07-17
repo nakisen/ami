@@ -205,6 +205,14 @@ func (c *Conn) writeAction(ctx context.Context, action Action, actionID string) 
 	return n, err
 }
 
+// clearWriteBuffer zeroes the reused encode buffer's full capacity. The
+// session layer calls it after the login exchange so a credential-
+// bearing frame does not outlive its write in long-lived memory. The
+// caller must hold write ownership, like WriteAction itself.
+func (c *Conn) clearWriteBuffer() {
+	clear(c.wbuf[:cap(c.wbuf)])
+}
+
 // Close closes the connection. It is idempotent, immediate, and safe to
 // call concurrently with pending operations, which fail with ErrClosed.
 func (c *Conn) Close() error {

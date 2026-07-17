@@ -178,6 +178,11 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 // reader exists yet, and an unauthenticated session receives nothing
 // unsolicited, so each action's response is the next message.
 func (c *Client) login(ctx context.Context, cfg Config) error {
+	// The plain-auth Login frame embeds the secret. The client retains
+	// no copy of the configuration, so scrubbing the connection's reused
+	// encode buffer on every exit path leaves no library-owned copy of
+	// the credential in long-lived memory.
+	defer c.conn.clearWriteBuffer()
 	events := cfg.EventMask
 	if events == "" {
 		events = "off"
