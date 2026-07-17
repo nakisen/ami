@@ -700,6 +700,23 @@ Cancelled and failed lists never cache or expose a completion event. The
 one retained message is caller-owned and remains bounded by the existing
 wire and list-message limits.
 
+## 2026-07-17 — amitest event masks are an explicit binary approximation
+
+The first mask implementation fixed the important on/off delivery gap but
+made two fixture limitations implicit: replacing the built-in `Events`
+handler also removed the only code able to mutate the private session mask,
+and every value except the literal `off` enabled all broadcasts. Custom
+handlers now use the concurrency-safe `Call.SetEventMask` primitive, while
+Login and the built-in handler share the same parser.
+
+The fake deliberately remains binary rather than inventing event privilege
+metadata for `Server.Event`. Asterisk's false-like and numeric zero values,
+`none`, and permission lists with no recognized positive class disable
+delivery; non-zero numeric masks and lists containing a recognized class
+enable it. Unknown-only lists are off. Granular class filtering is outside
+this fixture surface and is stated explicitly instead of being implied by
+the phrase "Asterisk-like".
+
 ## 2026-07-17 — Low-level ambiguous writes isolate transport error identity
 
 The explicit byte disposition fixed the high-level `Client`, but public

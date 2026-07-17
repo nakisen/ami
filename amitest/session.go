@@ -108,11 +108,12 @@ func (sess *session) authenticate(r *wire.Reader) bool {
 			// Mark before responding: once the client holds the success
 			// response, broadcasts must already see this session. The
 			// Login action's Events field sets the initial mask, like
-			// Asterisk: only an explicit off disables it, and an absent
-			// field leaves events on.
+			// Asterisk: false-like values disable it, and an absent field
+			// leaves events on. The fake intentionally models event classes
+			// as a binary mask; see Call.SetEventMask.
 			sess.srv.mu.Lock()
 			sess.authed = true
-			sess.events = !strings.EqualFold(call.Get("Events"), "off")
+			sess.events = eventMaskEnabled(call.Get("Events"))
 			sess.srv.mu.Unlock()
 			call.Respond("Success", "Message", "Authentication accepted")
 			return true
@@ -121,6 +122,64 @@ func (sess *session) authenticate(r *wire.Reader) bool {
 			call.Respond("Error", "Message", "Permission denied")
 			return false
 		}
+	}
+}
+
+// eventMaskEnabled reduces Asterisk's strings_to_mask result to the binary
+// delivery model amitest can represent. An empty value remains on, matching
+// an omitted Login Events field. Decimal values are on when non-zero;
+// permission lists are on only when they contain a recognized positive
+// class. List tokens tolerate surrounding blanks, which Asterisk's
+// substring-based class matching also accepts.
+func eventMaskEnabled(mask string) bool {
+	if mask == "" {
+		return true
+	}
+	mask = strings.ToLower(mask)
+	if numeric, nonZero := decimalEventMask(mask); numeric {
+		return nonZero
+	}
+	switch mask {
+	case "false", "off", "no", "none":
+		return false
+	case "true", "on", "yes", "all":
+		return true
+	}
+	for token := range strings.SplitSeq(mask, ",") {
+		if positiveEventPermission(strings.TrimSpace(token)) {
+			return true
+		}
+	}
+	return false
+}
+
+// decimalEventMask reports whether mask is an all-decimal Asterisk mask and,
+// without integer conversion or overflow, whether its value is non-zero.
+func decimalEventMask(mask string) (numeric, nonZero bool) {
+	if mask == "" {
+		return false, false
+	}
+	for _, c := range mask {
+		if c < '0' || c > '9' {
+			return false, false
+		}
+		if c != '0' {
+			nonZero = true
+		}
+	}
+	return true, nonZero
+}
+
+// positiveEventPermission is the positive portion of Asterisk's AMI
+// permission vocabulary. "none" deliberately contributes no permission.
+func positiveEventPermission(token string) bool {
+	switch token {
+	case "system", "call", "log", "verbose", "command", "agent", "user",
+		"config", "dtmf", "reporting", "cdr", "dialplan", "originate", "agi",
+		"cc", "aoc", "test", "security", "message", "all":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -325,6 +384,27 @@ func (c *Call) Fields() iter.Seq2[string, string] {
 			}
 		}
 	}
+}
+
+// SetEventMask applies mask to the calling session and reports whether
+// unsolicited [Server.Event] delivery is enabled. It is safe to call
+// concurrently with broadcasts and exists so a custom Events handler can
+// retain the built-in handler's mask semantics before sending its scripted
+// response.
+//
+// amitest models Asterisk event masks as a binary approximation. An empty
+// value enables delivery, matching Asterisk's omitted Login Events default.
+// The values false, off, no, 0, none, and lists containing only unknown or
+// none tokens disable delivery. The values true, on, yes, any non-zero
+// decimal mask, all, and lists containing at least one recognized AMI
+// permission class enable it. Permission classes are not filtered
+// individually. [Call.Event] and [Server.Raw] bypass this mask.
+func (c *Call) SetEventMask(mask string) bool {
+	on := eventMaskEnabled(mask)
+	c.sess.srv.mu.Lock()
+	c.sess.events = on
+	c.sess.srv.mu.Unlock()
+	return on
 }
 
 // Respond sends the action's response: the Response field carrying

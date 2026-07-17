@@ -793,7 +793,12 @@ deterministic scenarios composed through a programmatic Go builder API (no
 text script format is frozen in v0), strict unexpected-action failure,
 fragmentation/coalescing, delayed/interleaved messages, disconnects, TLS,
 and bounded malformed-input scenarios. It binds only loopback on an
-ephemeral port by default.
+ephemeral port by default. Its event mask is an explicit binary
+approximation of Asterisk's class mask: false-like values suppress
+`Server.Event`, any recognized positive class enables it, and granular
+class filtering is not simulated. Built-in Login and `Events` handling use
+the same parser; a replacement `Events` handler updates its session through
+`Call.SetEventMask` before responding.
 
 The library is hosted under the personal account `github.com/nakisen` with
 module path `github.com/nakisen/ami`; the license is Apache-2.0. The

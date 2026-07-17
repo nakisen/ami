@@ -292,6 +292,164 @@ func TestEventMaskGatesBroadcasts(t *testing.T) {
 	}
 }
 
+func TestEventMaskVocabulary(t *testing.T) {
+	tests := []struct {
+		mask string
+		on   bool
+	}{
+		{"false", false},
+		{"off", false},
+		{"no", false},
+		{"0", false},
+		{"000", false},
+		{"none", false},
+		{"unknown", false},
+		{"none,unknown", false},
+		{"true", true},
+		{"on", true},
+		{"yes", true},
+		{"1", true},
+		{"002", true},
+		{"999999999999999999999999999999999", true},
+		{"all", true},
+		{"", true},
+		{" ", false},
+		{"system,call", true}, // binary approximation of a class list
+		{"unknown,message", true},
+		{"none,system", true},
+		{"unknown,all", true},
+		{"none, system", true}, // blank-padded tokens, like Asterisk's substring matching
+		{"system , call", true},
+		{" off ", false},
+	}
+	for _, tc := range tests {
+		name := tc.mask
+		if name == "" {
+			name = "empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			srv := newServer(t, amitest.Config{})
+			c := dialServer(t, srv, nil)
+			sub, err := c.Subscribe(ami.MatchEvents("MaskProbe"))
+			if err != nil {
+				t.Fatalf("Subscribe() error = %v", err)
+			}
+			defer sub.Close()
+
+			res := mustDo(t, c, "Events", ami.Field{Key: "EventMask", Value: tc.mask})
+			wantState := "Off"
+			if tc.on {
+				wantState = "On"
+			}
+			if got := res.Response.Get("Events"); got != wantState {
+				t.Fatalf("Events(%q) response = %q, want %q", tc.mask, got, wantState)
+			}
+
+			srv.Event("MaskProbe", "Value", "masked-"+tc.mask)
+			wantValue := "masked-" + tc.mask
+			if !tc.on {
+				// Enabling and round-tripping the Events action is the
+				// protocol barrier proving the preceding broadcast was
+				// suppressed, without a timing assertion.
+				mustDo(t, c, "Events", ami.Field{Key: "EventMask", Value: "on"})
+				wantValue = "visible-after-" + tc.mask
+				srv.Event("MaskProbe", "Value", wantValue)
+			}
+			ev, err := sub.Next(context.Background())
+			if err != nil {
+				t.Fatalf("Next() error = %v", err)
+			}
+			if got := ev.Get("Value"); got != wantValue {
+				t.Fatalf("first delivered Value = %q, want %q", got, wantValue)
+			}
+		})
+	}
+}
+
+func TestLoginWithoutEventsEnablesBroadcasts(t *testing.T) {
+	srv := newServer(t, amitest.Config{})
+	conn, err := net.Dial("tcp", srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(conn)
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatalf("banner read: %v", err)
+	}
+	login := "Action: Login\r\nUsername: " + amitest.DefaultUsername +
+		"\r\nSecret: " + amitest.DefaultSecret + "\r\nActionID: login\r\n\r\n"
+	if _, err := conn.Write([]byte(login)); err != nil {
+		t.Fatal(err)
+	}
+	skipFrame(t, br)
+
+	// A missing Events field retains Asterisk's enabled default. This
+	// differs deliberately from ami.Config's explicit Events: off default.
+	srv.Event("AbsentMaskProbe", "Value", "visible")
+	var frame strings.Builder
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("event read: %v", err)
+		}
+		if line == "\r\n" {
+			break
+		}
+		frame.WriteString(line)
+	}
+	if got := frame.String(); !strings.Contains(got, "Event: AbsentMaskProbe\r\n") ||
+		!strings.Contains(got, "Value: visible\r\n") {
+		t.Fatalf("broadcast frame = %q, want AbsentMaskProbe/visible", got)
+	}
+}
+
+func TestCustomEventsHandlerCanSetEventMask(t *testing.T) {
+	srv := newServer(t, amitest.Config{})
+	srv.HandleAction("Events", func(call *amitest.Call) {
+		on := call.SetEventMask(call.Get("EventMask"))
+		state := "Off"
+		if on {
+			state = "On"
+		}
+		call.Respond("Success", "Events", state, "Handler", "custom")
+	})
+	c := dialServer(t, srv, nil)
+	sub, err := c.Subscribe(ami.MatchEvents("CustomMaskProbe"))
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	defer sub.Close()
+
+	res := mustDo(t, c, "Events", ami.Field{Key: "EventMask", Value: "system,call"})
+	if got := res.Response.Get("Handler"); got != "custom" {
+		t.Fatalf("Events response Handler = %q, want custom", got)
+	}
+	srv.Event("CustomMaskProbe", "Value", "first-visible")
+	ev, err := sub.Next(context.Background())
+	if err != nil {
+		t.Fatalf("Next() after enable error = %v", err)
+	}
+	if got := ev.Get("Value"); got != "first-visible" {
+		t.Fatalf("first delivered Value = %q, want first-visible", got)
+	}
+
+	mustDo(t, c, "Events", ami.Field{Key: "EventMask", Value: "none"})
+	srv.Event("CustomMaskProbe", "Value", "must-stay-masked")
+	mustDo(t, c, "Events", ami.Field{Key: "EventMask", Value: "yes"})
+	srv.Event("CustomMaskProbe", "Value", "second-visible")
+	ev, err = sub.Next(context.Background())
+	if err != nil {
+		t.Fatalf("Next() after re-enable error = %v", err)
+	}
+	if got := ev.Get("Value"); got != "second-visible" {
+		t.Fatalf("first delivered Value after re-enable = %q, want second-visible", got)
+	}
+}
+
 // skipFrame reads and discards one server frame up to its blank line.
 func skipFrame(t *testing.T, br *bufio.Reader) {
 	t.Helper()

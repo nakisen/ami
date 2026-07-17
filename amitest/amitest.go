@@ -183,14 +183,10 @@ func defaultLogoff(c *Call) {
 	c.Hangup()
 }
 
-// defaultEvents updates the session's event mask like Asterisk: only
-// an explicit EventMask of off disables unsolicited delivery; on and
-// class lists enable it.
+// defaultEvents updates the session's event mask through the same
+// binary approximation exposed to custom scenario handlers.
 func defaultEvents(c *Call) {
-	on := !strings.EqualFold(c.Get("EventMask"), "off")
-	c.sess.srv.mu.Lock()
-	c.sess.events = on
-	c.sess.srv.mu.Unlock()
+	on := c.SetEventMask(c.Get("EventMask"))
 	if on {
 		c.Respond("Success", "Events", "On")
 		return
@@ -206,8 +202,10 @@ func (s *Server) Addr() string {
 
 // HandleAction registers h for the named action under
 // case-insensitive matching, replacing any previous handler. A nil h
-// unregisters the name; unregistering Ping or Logoff removes the
-// built-in default when a scenario wants those actions strict too.
+// unregisters the name; unregistering Ping, Logoff, or Events removes
+// the built-in default when a scenario wants those actions strict too.
+// A replacement Events handler can preserve mask behavior by calling
+// [Call.SetEventMask] with the received EventMask before it responds.
 //
 // Handlers run on the receiving session's goroutine, one at a time
 // per session in arrival order, so a handler's sends are ordered
