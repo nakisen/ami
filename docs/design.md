@@ -439,6 +439,9 @@ function that would run on the read loop.
 - `List.All(ctx)` is a single-use adapter over the same handle and follows
   the same ownership rules as `Subscription.All`.
 - `List.Completion()` exposes the terminal completion event after success.
+  Clean completion transfers that event to the handle before branch
+  bookkeeping is released, so it remains available after an owning `All`
+  adapter closes the list. Failed and cancelled lists expose no completion.
   A configured count is verified against the first declared count field
   present; no count is required when none is declared. The remote count is
   never trusted for preallocation.

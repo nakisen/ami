@@ -20,6 +20,13 @@ type List struct {
 	b    *branchState
 	resp Response
 
+	// Guarded by c.mu. Once clean completion has committed, Close
+	// transfers the completion message from the machine to the handle
+	// before releasing machine bookkeeping so Completion remains useful
+	// after an owning adapter exits.
+	completion    Message
+	hasCompletion bool
+
 	busy    atomic.Bool
 	adapted atomic.Bool
 }
@@ -84,10 +91,14 @@ func (l *List) All(ctx context.Context) iter.Seq2[Event, error] {
 // Completion returns the terminal completion event after clean
 // completion and reports whether one is available. The declared count,
 // when configured, was already verified before the completion
-// committed.
+// committed. Once clean completion has committed, the event remains
+// available after Close releases the list's machine bookkeeping.
 func (l *List) Completion() (Event, bool) {
 	l.c.mu.Lock()
 	defer l.c.mu.Unlock()
+	if l.hasCompletion {
+		return Event{l.completion}, true
+	}
 	if _, open := l.c.branches[l.b.id]; !open {
 		return Event{}, false
 	}
@@ -106,9 +117,9 @@ func (l *List) Done() <-chan struct{} {
 }
 
 // Err returns the list's stable terminal error: nil while active and
-// after clean completion, a *ListError for cancellation, overflow, or
-// a count mismatch, ErrClosed after local Close, or the client root
-// cause.
+// after clean completion, a *ListError for cancellation, overflow, a
+// count mismatch, or a malformed declared count, ErrClosed after local
+// Close, or the client root cause.
 func (l *List) Err() error {
 	l.c.mu.Lock()
 	defer l.c.mu.Unlock()
@@ -121,6 +132,21 @@ func (l *List) Err() error {
 // drain expires. Queued items are discarded and ErrClosed commits as
 // the terminal result unless one already won.
 func (l *List) Close() error {
-	l.c.closeBranch(l.b)
+	// A clean terminal's completion belongs to the handle after its
+	// owning adapter releases the machine branch. Failed, cancelled and
+	// still-streaming lists expose no completion because the machine has
+	// none to transfer. The transfer and branch release share one
+	// session-lock critical section so a racing remote completion lands
+	// wholly before or wholly after the local close.
+	l.c.mu.Lock()
+	defer l.c.mu.Unlock()
+	if _, open := l.c.branches[l.b.id]; !open {
+		return nil
+	}
+	if msg, ok := l.c.machine.ListCompletion(l.b.id); ok {
+		l.completion = msg
+		l.hasCompletion = true
+	}
+	l.c.closeBranchLocked(l.b)
 	return nil
 }

@@ -688,6 +688,18 @@ stays definitely-not-sent and the impossible response terminates the
 client with a sanitized correlation `ProtocolError`; provisional follow
 or list ownership is released during the same terminal transition.
 
+## 2026-07-17 — List completion belongs to the handle after clean close
+
+`List.All` is an owning adapter and therefore closes its branch on every
+exit. Clean iteration used to delete the machine's stored completion event
+before the caller could invoke `List.Completion`, contradicting the public
+completion accessor. A clean terminal completion is now transferred to the
+`List` handle under the session lock before branch bookkeeping is released,
+so it remains queryable after `All` returns or an idempotent `Close`.
+Cancelled and failed lists never cache or expose a completion event. The
+one retained message is caller-owned and remains bounded by the existing
+wire and list-message limits.
+
 ## 2026-07-17 — Low-level ambiguous writes isolate transport error identity
 
 The explicit byte disposition fixed the high-level `Client`, but public

@@ -265,6 +265,13 @@ func (c *Client) takeBranch(ctx context.Context, b *branchState) (Message, error
 func (c *Client) closeBranch(b *branchState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.closeBranchLocked(b)
+}
+
+// closeBranchLocked releases a branch while c.mu is held. List.Close
+// uses this form so it can transfer the stored completion to its handle
+// in the same critical section that removes the machine state.
+func (c *Client) closeBranchLocked(b *branchState) {
 	if _, ok := c.branches[b.id]; !ok {
 		return
 	}
