@@ -56,7 +56,8 @@ evidence. The short version of what this library does differently:
   currently developed against `go1.27rc1`; see
   [docs/compatibility.md](docs/compatibility.md) for the toolchain policy.
 - **Asterisk:** supported protocol versions are AMI 2.0 and newer
-  (Asterisk 12+); the live-tested matrix is Asterisk 18, 20, 22, and 23.
+  (Asterisk 12+); the planned live-integration matrix targets Asterisk
+  18, 20, 22, and 23.
   The [compatibility table](docs/compatibility.md) interprets older
   banners for diagnostics only.
 

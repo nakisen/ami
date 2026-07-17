@@ -51,9 +51,13 @@ func TestQueueCompactionReleasesStaleReferences(t *testing.T) {
 		q.push(live, 1)
 		q.pop()
 	}
-	for i, e := range q.entries {
-		if i >= q.head+q.len() && (e.msg != nil || e.size != 0) {
-			t.Fatalf("entry %d past the live tail retains %+v", i, e)
+	// Inspect the full backing array, not only the live slice. A
+	// compaction shrinks len while retaining cap, so stale duplicates
+	// would otherwise sit outside range q.entries and escape the test.
+	for i, e := range q.entries[:cap(q.entries)] {
+		live := i >= q.head && i < len(q.entries)
+		if !live && (e.msg != nil || e.size != 0) {
+			t.Fatalf("dead backing slot %d retains %+v (head=%d len=%d cap=%d)", i, e, q.head, len(q.entries), cap(q.entries))
 		}
 	}
 }

@@ -787,8 +787,8 @@ process before implementation. Normal tests are offline and deterministic.
   customer capture, partner capture, credential, or operational identifier
   is committed to the repository.
 - Race-enabled CI across the suite and repeated focused lifecycle runs.
-- Tagged integration tests against an explicit real-Asterisk matrix — live
-  jobs cover Asterisk 18, 20, 22, and 23, while legacy-only behaviors
+- Planned tagged integration tests target an explicit real-Asterisk matrix —
+  live jobs will cover Asterisk 18, 20, 22, and 23, while legacy-only behaviors
   (`--END COMMAND--` Command framing, MD5 challenge against older
   releases, chan_sip-era list actions such as `SIPpeers`/`PeerlistComplete`,
   version-pinned since chan_sip's removal in Asterisk 21) run against

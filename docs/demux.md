@@ -194,7 +194,7 @@ covers Buffering plus its buffered-terminal variants.
 | Buffering* | response `Success` routed | Streaming, or the buffered terminal outcome — the returned handle may already be complete or cancelled |
 | Buffering* | response `Error` routed | released: buffered items discarded, charges released; stray later events fall to late-list discard |
 | Streaming | correlated non-terminal event | enqueue item (reserve-or-terminate) |
-| Streaming | completion (declared name or `EventList: Complete`) | CompletedDraining: a declared count field, when configured and present, is verified first — mismatch is Failed(count); the completion event is charged and stored for `Completion()`, not enqueued as an item |
+| Streaming | completion (declared name or `EventList: Complete`) | CompletedDraining: a declared count field, when configured and present, is verified first — malformed or negative values and mismatches are Failed(count); the completion event is charged and stored for `Completion()`, not enqueued as an item |
 | Streaming | `EventList: cancelled` | Cancelled: queued items discarded |
 | Buffering*, Streaming | reservation failure | Failed(overflow) plus a drain record absorbing the remainder until terminal evidence or expiry |
 | Streaming | caller `Close`, abandoned adapter | Closed plus a drain record until terminal evidence or expiry |
@@ -438,7 +438,7 @@ func (m *Machine[T]) CloseFollow(t Ticket)
 func (m *Machine[T]) AdoptList(t Ticket) BranchID
 func (m *Machine[T]) CloseList(t Ticket)
 func (m *Machine[T]) Subscribe(match Matcher, caps Caps) (BranchID, error)
-func (m *Machine[T]) Close(id BranchID)
+func (m *Machine[T]) Close(id BranchID, now int64)
 func (m *Machine[T]) Take(id BranchID) (T, TakeResult)
 func (m *Machine[T]) NextDeadline() (int64, bool)
 func (m *Machine[T]) Expire(now int64) Effects

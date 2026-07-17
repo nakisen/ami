@@ -56,7 +56,7 @@ parser.
 
 - Supported protocol versions: AMI 2.0.0 and newer (Asterisk 12+); only
   AMI 1.x is out of scope.
-- Live integration tests target Asterisk 18, 20, 22, and 23.
+- Planned live integration tests target Asterisk 18, 20, 22, and 23.
 - Legacy-only behaviors — `--END COMMAND--` Command framing (pre-14.2),
   MD5 challenge login against older releases, and chan_sip-era list
   actions such as `SIPpeers`/`PeerlistComplete` — run against

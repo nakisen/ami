@@ -64,9 +64,9 @@ type Machine[T any] struct {
 	lim Limits
 
 	// now is the machine's logical clock: the maximum timestamp any
-	// call has supplied. It dates drain records created by calls that
-	// carry no timestamp of their own (Close, and overflow during
-	// Route).
+	// call has supplied. Timestamped control-plane calls such as Close
+	// advance it before creating records; routing-time overflow uses the
+	// latest value supplied by the session.
 	now int64
 
 	dead       bool
