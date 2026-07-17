@@ -114,14 +114,19 @@ func (m *Machine[T]) Subscribe(match Matcher, caps Caps) (BranchID, error) {
 	return BranchID{s.id}, nil
 }
 
-// Close releases a branch by ID. On an active branch it commits the
+// Close releases a branch by ID, advancing the machine's logical clock
+// to now first so a drain record created here is dated at the Close
+// call rather than at the last routed message — on an idle session the
+// stale clock could otherwise produce an already-expired record whose
+// only outcome is a fatal expiry. On an active branch Close commits the
 // local-close terminal first: a subscription or follow discards its
 // queue; a streaming list additionally converts its reserved slot into
 // a drain record, because the remote may still stream. On an already
 // terminal branch, Close is the acknowledgment that removes the
 // retained bookkeeping, discarding any undrained clean-terminal queue.
 // Closing an unknown (already closed) branch is a no-op.
-func (m *Machine[T]) Close(id BranchID) {
+func (m *Machine[T]) Close(id BranchID, now int64) {
+	m.clock(now)
 	if s := m.subByID[id.n]; s != nil {
 		if s.phase == bActive {
 			s.phase = bDead

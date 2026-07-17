@@ -62,7 +62,7 @@ func TestListHappyPath(t *testing.T) {
 	}
 	takeState(t, m, sub, TakeEmpty, 0)
 
-	m.Close(id)
+	m.Close(id, 0)
 	wantAggregates(t, m, 0, 0)
 }
 
@@ -114,7 +114,7 @@ func TestListOverflowOnTerminalMarkKeepsEvidence(t *testing.T) {
 	if _, ok := m.NextDeadline(); ok {
 		t.Fatal("a drain record survived a fully evidenced overflow")
 	}
-	m.Close(id)
+	m.Close(id, 0)
 }
 
 // TestListOverflowOnEarlyTerminalMarkAwaitsOnlyResponse is the
@@ -134,7 +134,31 @@ func TestListOverflowOnEarlyTerminalMarkAwaitsOnlyResponse(t *testing.T) {
 	wantRetirement(t, m, 0, 0) // released; nothing can expire
 	id := m.AdoptList(tk)
 	takeState(t, m, id, TakeTerminal, ReasonOverflow)
-	m.Close(id)
+	m.Close(id, 0)
+}
+
+// TestListCloseDatesDrainRecordAtCloseTime pins the drain deadline to
+// the Close call, not to the last routed message: after a long idle
+// stretch the stale clock would otherwise produce an already-expired
+// record whose only outcome is a fatal expiry.
+func TestListCloseDatesDrainRecordAtCloseTime(t *testing.T) {
+	m := newMachine(t)
+	life := testLimits().RetirementLifetime
+	tk := startList(t, m, "l1", listOpts("done"))
+	route(t, m, at(resp("l1", KindList, true), 100), 0)
+	id := m.AdoptList(tk)
+
+	// The clock last advanced at 100; the local Close happens much
+	// later, on an otherwise idle session.
+	m.Close(id, 5000)
+	wantRetirement(t, m, 0, 1)
+	if dl, ok := m.NextDeadline(); !ok || dl != 5000+life {
+		t.Fatalf("NextDeadline = (%d, %t), want (%d, true): the record must be dated at Close", dl, ok, 5000+life)
+	}
+	// What would have been the stale deadline passes without incident.
+	if fx := m.Expire(100 + life); fx.Fatal != nil {
+		t.Fatal("drain record expired on the stale pre-Close clock")
+	}
 }
 
 func TestListEarlyCompletionBeforeResponse(t *testing.T) {
@@ -380,7 +404,7 @@ func TestListCloseWhileStreaming(t *testing.T) {
 	// dates the drain record Close creates.
 	route(t, m, at(evOwn("item", "l1", KindList), 200), 1)
 
-	m.Close(id)
+	m.Close(id, 0)
 	wantAggregates(t, m, 0, 0)
 	wantRetirement(t, m, 0, 1) // the remote may still stream: drain record
 	if dl, ok := m.NextDeadline(); !ok || dl != 1200 {
@@ -489,8 +513,8 @@ func TestQueueStatusInterleave(t *testing.T) {
 	takeItem(t, m, sub, 103)
 	takeState(t, m, sub, TakeEmpty, 0)
 
-	m.Close(id)
-	m.Close(sub)
+	m.Close(id, 0)
+	m.Close(sub, 0)
 	wantAggregates(t, m, 0, 0)
 	wantRetirement(t, m, 0, 0)
 }

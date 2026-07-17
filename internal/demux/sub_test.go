@@ -56,7 +56,7 @@ func TestFanoutMatching(t *testing.T) {
 	if len(fx.Wake) != 1 { // only the match-all subscription
 		t.Fatalf("wake set %v for a nearly-unmatched event", fx.Wake)
 	}
-	m.Close(all)
+	m.Close(all, 0)
 	fx = route(t, m, ev("zzz"), 3)
 	if len(fx.Wake) != 0 {
 		t.Fatalf("wake set %v for an unmatched event", fx.Wake)
@@ -156,9 +156,9 @@ func TestCloseSubscription(t *testing.T) {
 	m := newMachine(t)
 	id := subscribe(t, m)
 	route(t, m, ev("a"), 1)
-	m.Close(id)
+	m.Close(id, 0)
 	wantAggregates(t, m, 0, 0)
-	m.Close(id) // idempotent: already released
+	m.Close(id, 0) // idempotent: already released
 	subs, _, _ := m.Branches()
 	if subs != 0 {
 		t.Fatalf("%d subscription entries retained after Close", subs)
@@ -179,7 +179,7 @@ func TestCloseAfterTerminalReleasesEntry(t *testing.T) {
 	route(t, m, ev("a"), 1)
 	route(t, m, ev("a"), 2) // lagged
 	takeState(t, m, id, TakeTerminal, ReasonLagged)
-	m.Close(id) // acknowledgment: removes the terminal bookkeeping
+	m.Close(id, 0) // acknowledgment: removes the terminal bookkeeping
 	subs, _, _ := m.Branches()
 	if subs != 0 {
 		t.Fatalf("%d subscription entries retained after terminal Close", subs)
@@ -208,7 +208,7 @@ func TestTerminalProbe(t *testing.T) {
 	if _, res := m.Take(id); res.State != TakeTerminal || res.Reason != ReasonLagged {
 		t.Fatalf("Take after probe = %+v", res)
 	}
-	m.Close(id)
+	m.Close(id, 0)
 	if reason, terminal := m.Terminal(id); !terminal || reason != ReasonClosed {
 		t.Fatalf("Terminal(closed) = (%v, %v), want committed ReasonClosed", reason, terminal)
 	}

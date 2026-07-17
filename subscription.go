@@ -252,7 +252,7 @@ func (c *Client) closeBranch(b *branchState) {
 	if _, ok := c.branches[b.id]; !ok {
 		return
 	}
-	c.resolveDeadLocked(func() { c.machine.Close(b.id) })
+	c.resolveDeadLocked(func() { c.machine.Close(b.id, c.now()) })
 	delete(c.branches, b.id)
 	c.commitTerminalLocked(b, demux.ReasonClosed)
 	c.pokeExpiry()

@@ -60,8 +60,8 @@ func TestFollowLifecycle(t *testing.T) {
 	takeState(t, m, id, TakeEOF, 0)
 	takeItem(t, m, sub, 5)
 
-	m.Close(id)
-	m.Close(sub)
+	m.Close(id, 0)
+	m.Close(sub, 0)
 	wantAggregates(t, m, 0, 0)
 }
 
@@ -77,7 +77,7 @@ func TestFollowNilSelectionTakesAll(t *testing.T) {
 	takeItem(t, m, id, 2)
 	// No declared completion: the follow ends only by explicit close.
 	takeState(t, m, id, TakeEmpty, 0)
-	m.Close(id)
+	m.Close(id, 0)
 	wantPanic(t, "unknown branch", func() { m.Take(id) })
 }
 

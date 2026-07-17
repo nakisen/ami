@@ -119,7 +119,7 @@ func TestRandomizedFanoutAgainstOracle(t *testing.T) {
 					continue
 				}
 				i := rng.IntN(len(subs))
-				m.Close(subs[i].id)
+				m.Close(subs[i].id, 0)
 				subs = append(subs[:i], subs[i+1:]...)
 
 			case 2, 3: // take
@@ -259,7 +259,7 @@ func TestRandomizedFanoutAgainstOracle(t *testing.T) {
 			if res.State != TakeTerminal || res.Reason != wantReason {
 				t.Fatalf("seed %d: post-kill take = %+v, want terminal %v", seed, res, wantReason)
 			}
-			m.Close(s.id)
+			m.Close(s.id, 0)
 		}
 		wantAggregates(t, m, 0, 0)
 		wantRetirement(t, m, 0, 0)
@@ -706,7 +706,7 @@ func driveMachine(t testing.TB, ch chooser) {
 					deadline: fedNow + lim.RetirementLifetime,
 				})
 			}
-			m.Close(b.id)
+			m.Close(b.id, 0)
 			b.closed = true
 
 		case 14: // expire
@@ -766,7 +766,7 @@ func driveMachine(t testing.TB, ch chooser) {
 			switch p.outcome {
 			case outSuccess:
 				id := m.AdoptList(p.tk)
-				m.Close(id)
+				m.Close(id, 0)
 			default:
 				m.CloseList(p.tk)
 			}
@@ -775,7 +775,7 @@ func driveMachine(t testing.TB, ch chooser) {
 	}
 	for _, b := range branches {
 		if !b.closed {
-			m.Close(b.id)
+			m.Close(b.id, 0)
 		}
 	}
 	subBytes, listBytes := m.Aggregates()

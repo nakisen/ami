@@ -108,8 +108,8 @@ func TestCleanDrainSurvivesKill(t *testing.T) {
 		t.Fatalf("stored completion lost at death")
 	}
 
-	m.Close(fol)
-	m.Close(lst)
+	m.Close(fol, 0)
+	m.Close(lst, 0)
 	wantAggregates(t, m, 0, 0)
 }
 
@@ -136,7 +136,7 @@ func TestDeathCompletionThenResolution(t *testing.T) {
 		// is already dead.
 		id := m.AdoptFollow(tk)
 		takeState(t, m, id, TakeTerminal, ReasonClientDead)
-		m.Close(id)
+		m.Close(id, 0)
 	})
 	t.Run("write resolutions after death", func(t *testing.T) {
 		m := newMachine(t)
