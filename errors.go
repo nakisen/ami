@@ -81,6 +81,50 @@ func (e *ProtocolError) Unwrap() error {
 	return e.cause
 }
 
+// A WriteError reports a transport failure from Conn.WriteAction. The
+// connection has been closed. MayHaveExecuted distinguishes a proven
+// zero-byte failure from a write that transferred at least one byte
+// without proving that the complete frame was written.
+//
+// WriteError deliberately does not implement Unwrap. A transport is
+// allowed to return a context-like or *ProtocolError value alongside any
+// byte count; putting that value in the error chain would let it
+// masquerade as a clean cancellation or a pre-wire validation rejection.
+// Cause exposes the original transport error explicitly for callers that
+// need to classify it.
+type WriteError struct {
+	mayHaveExecuted bool
+	cause           error
+}
+
+func (e *WriteError) Error() string {
+	s := "ami: action write failed"
+	if e.mayHaveExecuted {
+		s += " (outcome unknown)"
+	}
+	return s
+}
+
+// MayHaveExecuted reports whether at least one action byte may have
+// reached the server without proof that the complete frame was written.
+func (e *WriteError) MayHaveExecuted() bool {
+	return e.mayHaveExecuted
+}
+
+// Cause returns the transport error that ended the write. It is
+// intentionally not exposed through Unwrap; applications must classify
+// and redact it before logging.
+func (e *WriteError) Cause() error {
+	return e.cause
+}
+
+// Is reports ErrOutcomeUnknown exactly when MayHaveExecuted is true. The
+// transport cause is deliberately not part of errors.Is or errors.As
+// traversal; retrieve it through Cause.
+func (e *WriteError) Is(target error) bool {
+	return target == ErrOutcomeUnknown && e.mayHaveExecuted
+}
+
 // A RequestPhase locates where an action dispatch failed.
 type RequestPhase uint8
 

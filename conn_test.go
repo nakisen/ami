@@ -49,6 +49,19 @@ type signalConn struct {
 	writeOnce    sync.Once
 }
 
+// writeResultConn reports one caller-selected write result without
+// changing its cause. It models transports whose error identity collides
+// with the clean/pre-wire meanings on Conn's public error surface.
+type writeResultConn struct {
+	net.Conn
+	n   int
+	err error
+}
+
+func (c *writeResultConn) Write(p []byte) (int, error) {
+	return min(c.n, len(p)), c.err
+}
+
 func newSignalConn(c net.Conn) *signalConn {
 	return &signalConn{
 		Conn:         c,
@@ -323,14 +336,78 @@ func TestConnWriteCancelPartialCloses(t *testing.T) {
 	}()
 	ping := mustAction(t, "Ping")
 	err := c.WriteAction(ctx, ping, "12345")
+	var we *WriteError
+	if !errors.As(err, &we) || !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("WriteAction() = %v, want outcome-unknown *WriteError", err)
+	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("partial write surfaced as a clean context error")
 	}
-	if !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("WriteAction() = %v, want the transport deadline error", err)
+	if !errors.Is(we.Cause(), os.ErrDeadlineExceeded) {
+		t.Fatalf("WriteError.Cause() = %v, want the transport deadline error", we.Cause())
 	}
 	if err := c.WriteAction(context.Background(), ping, ""); !errors.Is(err, ErrClosed) {
 		t.Fatalf("WriteAction() after poisoning = %v, want ErrClosed", err)
+	}
+}
+
+func TestConnWriteFailureCauseCannotMasquerade(t *testing.T) {
+	protocolCause := &ProtocolError{Category: "synthetic", Dimension: "transport"}
+	tests := []struct {
+		name            string
+		n               int
+		cause           error
+		mayHaveExecuted bool
+		wantError       string
+	}{
+		{name: "zero-byte context-like cause", cause: context.Canceled, wantError: "ami: action write failed"},
+		{name: "zero-byte protocol-like cause", cause: protocolCause, wantError: "ami: action write failed"},
+		{name: "partial context-like cause", n: 1, cause: context.Canceled, mayHaveExecuted: true, wantError: "ami: action write failed (outcome unknown)"},
+		{name: "partial protocol-like cause", n: 1, cause: protocolCause, mayHaveExecuted: true, wantError: "ami: action write failed (outcome unknown)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client, server := net.Pipe()
+			transport := &writeResultConn{Conn: client, n: tt.n, err: tt.cause}
+			c, err := NewConn(transport, WireLimits{})
+			if err != nil {
+				t.Fatalf("NewConn() error = %v", err)
+			}
+			t.Cleanup(func() {
+				c.Close()
+				server.Close()
+			})
+
+			ping := mustAction(t, "Ping")
+			err = c.WriteAction(context.Background(), ping, "synthetic-id")
+			var we *WriteError
+			if !errors.As(err, &we) || we.MayHaveExecuted() != tt.mayHaveExecuted {
+				t.Fatalf("WriteAction() = %v, want *WriteError with MayHaveExecuted=%v", err, tt.mayHaveExecuted)
+			}
+			if got := errors.Is(err, ErrOutcomeUnknown); got != tt.mayHaveExecuted {
+				t.Fatalf("errors.Is(WriteAction(), ErrOutcomeUnknown) = %v, want %v", got, tt.mayHaveExecuted)
+			}
+			if got := we.Cause(); got != tt.cause {
+				t.Fatalf("WriteError.Cause() = %v, want original cause %v", got, tt.cause)
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				t.Fatal("transport write failure exposed a context-like cause through errors.Is")
+			}
+			if _, ok := errors.AsType[*ProtocolError](err); ok {
+				t.Fatal("transport write failure exposed a protocol-like cause through errors.As")
+			}
+			if got := err.Error(); got != tt.wantError {
+				t.Fatalf("WriteError.Error() = %q, want stable sanitized text", got)
+			}
+			closedErr := c.WriteAction(context.Background(), ping, "")
+			if !errors.Is(closedErr, ErrClosed) {
+				t.Fatalf("WriteAction() after transport failure = %v, want ErrClosed", closedErr)
+			}
+			if _, ok := errors.AsType[*WriteError](closedErr); ok {
+				t.Fatal("operation on closed Conn returned a *WriteError")
+			}
+		})
 	}
 }
 

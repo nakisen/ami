@@ -3,6 +3,7 @@ package ami
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -33,14 +34,17 @@ var aLongTimeAgo = time.Unix(1, 0)
 // cleanly: no byte of the pending inbound frame had been consumed, or no
 // action byte had been written. The connection remains usable.
 //
-// Any other error means the connection has been closed. Transport errors
-// are returned verbatim; inbound protocol and limit violations are
-// reported as *ProtocolError; a clean remote close surfaces as io.EOF at
-// a message boundary and as io.ErrUnexpectedEOF inside a frame; and a
-// cancellation that interrupted a partially transferred frame surfaces
-// as the transport's deadline error, deliberately not as a context
-// error, because the frame — and therefore the connection — is
-// unrecoverable.
+// Any other error means the connection has been closed. Inbound transport
+// errors are returned verbatim; inbound protocol and limit violations are
+// reported as *ProtocolError; and a clean remote close surfaces as io.EOF
+// at a message boundary and as io.ErrUnexpectedEOF inside a frame.
+//
+// WriteAction returns a *WriteError for a transport write failure.
+// MayHaveExecuted and ErrOutcomeUnknown distinguish an ambiguous write
+// from a proven zero-byte failure. Cause exposes the transport error
+// explicitly but deliberately keeps context-like and *ProtocolError
+// transport values out of the error chain, where they would falsely signal
+// a clean cancellation or pre-wire validation rejection.
 //
 // A frame that stays incomplete past WireLimits.MaxPartialFrameAge is an
 // inbound violation: the read fails with a *ProtocolError and the
@@ -154,26 +158,51 @@ func (c *Conn) read(ctx context.Context, op func() error) error {
 //
 // Validation and encoding complete before any byte is written, so a
 // *ProtocolError leaves the connection usable, as does a cancellation
-// with zero bytes written. Once any byte may have been written, an error
-// closes the connection and the action's outcome is unknown.
+// with zero bytes written. A transport write failure closes the connection
+// and returns a *WriteError. MayHaveExecuted and ErrOutcomeUnknown report
+// whether any byte may have been written; Cause exposes the underlying
+// transport error without placing it in the error chain.
 func (c *Conn) WriteAction(ctx context.Context, action Action, actionID string) error {
-	_, err := c.writeAction(ctx, action, actionID)
+	disposition, err := c.writeAction(ctx, action, actionID)
+	switch disposition {
+	case writeNotSent:
+		return &WriteError{cause: err}
+	case writeOutcomeUnknown:
+		return &WriteError{mayHaveExecuted: true, cause: err}
+	}
 	return err
 }
 
-// writeAction is WriteAction reporting the written byte count, which
-// the session layer needs for its outcome classification: an error with
-// zero bytes written is definitely-not-sent even when the connection
-// closed, while any written byte makes the outcome unknown.
-func (c *Conn) writeAction(ctx context.Context, action Action, actionID string) (int, error) {
+// writeDisposition tells the session why writeAction returned. It is
+// deliberately independent of the error chain: a transport is allowed
+// to return any error value, including one that happens to match a
+// context or protocol error after transferring bytes.
+type writeDisposition uint8
+
+const (
+	writeComplete       writeDisposition = 1 + iota
+	writeRejected                        // local validation, connection usable
+	writeCanceled                        // clean zero-byte cancellation, connection usable
+	writeClosed                          // connection was already closed, no transport failure
+	writeNotSent                         // zero-byte transport failure, connection closed
+	writeOutcomeUnknown                  // one or more bytes transferred, connection closed
+)
+
+// writeAction is WriteAction reporting an explicit private disposition
+// for the session layer's outcome classification. Error identity alone
+// never establishes whether bytes reached the transport.
+func (c *Conn) writeAction(ctx context.Context, action Action, actionID string) (writeDisposition, error) {
 	if err := c.enter(ctx); err != nil {
-		return 0, err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return writeCanceled, err
+		}
+		return writeClosed, err
 	}
 	if action.name == "" {
-		return 0, &ProtocolError{Category: "envelope", Dimension: "empty action name"}
+		return writeRejected, &ProtocolError{Category: "envelope", Dimension: "empty action name"}
 	}
 	if strings.ContainsAny(actionID, "\x00\r\n") {
-		return 0, &ProtocolError{Category: "envelope", Dimension: "action id"}
+		return writeRejected, &ProtocolError{Category: "envelope", Dimension: "action id"}
 	}
 	fields := make([]wire.Field, 0, len(action.fields)+2)
 	fields = append(fields, wire.Field{Key: "Action", Value: action.name})
@@ -185,24 +214,33 @@ func (c *Conn) writeAction(ctx context.Context, action Action, actionID string) 
 	}
 	buf, err := wire.AppendMessage(c.wbuf[:0], fields, c.lim)
 	if err != nil {
-		return 0, wireError(err)
+		return writeRejected, wireError(err)
 	}
 	c.wbuf = buf
 
 	release := c.interrupt(ctx, c.writePoke, c.writeClear)
 	n, err := c.conn.Write(buf)
 	interrupted := release()
+	if err == nil && n == len(buf) {
+		return writeComplete, nil
+	}
 	if err == nil {
-		return n, nil
+		err = io.ErrShortWrite
 	}
 	if c.isClosed() {
-		return n, ErrClosed
+		if n > 0 {
+			return writeOutcomeUnknown, ErrClosed
+		}
+		return writeClosed, ErrClosed
 	}
 	if interrupted && n == 0 && errors.Is(err, os.ErrDeadlineExceeded) {
-		return 0, ctx.Err()
+		return writeCanceled, ctx.Err()
 	}
 	c.poison()
-	return n, err
+	if n > 0 {
+		return writeOutcomeUnknown, err
+	}
+	return writeNotSent, err
 }
 
 // clearWriteBuffer zeroes the reused encode buffer's full capacity. The

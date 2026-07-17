@@ -956,12 +956,12 @@ func TestWriteDeathRaceStaysNotSent(t *testing.T) {
 
 	// Zero bytes reached the wire, so definitely-not-sent must win over
 	// the death completion's unknown-outcome default.
-	if !c.resolveNotSentLocked(tkt, w, demux.AdmitOptions[Message]{}) {
-		t.Fatal("resolveNotSentLocked adopted a raced death completion as the outcome")
+	if err := c.resolveNotSent(tkt, w, demux.AdmitOptions[Message]{}); err != nil {
+		t.Fatalf("resolveNotSent() after raced death = %v, want definitely-not-sent", err)
 	}
 }
 
-func TestWriteRaceDeliveredResponseWins(t *testing.T) {
+func TestWriteRaceDeliveredResponseIsFatalContradiction(t *testing.T) {
 	c, _ := dialTest(t, nil)
 
 	c.mu.Lock()
@@ -972,15 +972,21 @@ func TestWriteRaceDeliveredResponseWins(t *testing.T) {
 	}
 	c.mu.Unlock()
 
-	// A delivered completion — a response that outran the write failure —
-	// is the committed outcome and stays in the waiter channel.
+	// Zero bytes reached the transport, so even a response that outran
+	// the write failure cannot become a successful user outcome.
 	w := make(chan demux.Completion[Message], 1)
 	w <- demux.Completion[Message]{Ticket: tkt, Delivered: true}
-	if c.resolveNotSentLocked(tkt, w, demux.AdmitOptions[Message]{}) {
-		t.Fatal("resolveNotSentLocked discarded a delivered response")
+	err = c.resolveNotSent(tkt, w, demux.AdmitOptions[Message]{})
+	var pe *ProtocolError
+	if !errors.As(err, &pe) || pe.Category != "correlation" {
+		t.Fatalf("resolveNotSent() = %v, want a correlation ProtocolError", err)
 	}
-	if len(w) != 1 {
-		t.Fatal("the delivered completion was not left for the awaiter")
+	if len(w) != 0 {
+		t.Fatal("the contradictory completion remained available to the awaiter")
+	}
+	c.die(err)
+	if !errors.As(c.Err(), &pe) || pe.Category != "correlation" {
+		t.Fatalf("Err() = %v, want the correlation contradiction", c.Err())
 	}
 }
 

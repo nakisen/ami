@@ -666,3 +666,73 @@ and avoids a second error surface for the same failure class.
 design.md previously said "no handle escapes" for pre-response
 failures and was aligned to the implementation; the behavior is pinned
 by a root-level regression test.
+
+## 2026-07-17 — Write outcome comes from an explicit byte disposition
+
+The external-review fix that kept local outbound validation from killing
+the session still inferred its source from the public error chain. A custom
+`DialContext` transport can return a context-like or even
+`*ProtocolError` value after transferring bytes; treating that error name
+as proof of a pre-wire failure would make a privileged action look safe to
+retry. The connection layer now returns a private disposition independent
+of the error value: local rejection, clean zero-byte cancellation,
+zero-byte transport failure, complete write, or outcome unknown. Any
+transferred byte makes the action outcome unknown and terminates the
+client; a zero-byte transport failure remains definitely-not-sent for the
+request but still terminates the unusable connection.
+
+A second contradiction is resolved explicitly: if a response is already
+correlated when the writer proves that zero bytes reached the transport,
+the response cannot become the user's successful outcome. The request
+stays definitely-not-sent and the impossible response terminates the
+client with a sanitized correlation `ProtocolError`; provisional follow
+or list ownership is released during the same terminal transition.
+
+## 2026-07-17 — Low-level ambiguous writes isolate transport error identity
+
+The explicit byte disposition fixed the high-level `Client`, but public
+`Conn.WriteAction` still discarded it and returned the raw transport error.
+A custom transport could therefore report a positive byte count alongside
+`context.Canceled` or a `*ProtocolError`, making an ambiguous write look
+like the two retry-safe low-level cases: clean cancellation or outbound
+validation before I/O.
+
+`Conn.WriteAction` now returns a sanitized `*WriteError` for the one
+ambiguous disposition. It matches `ErrOutcomeUnknown`, reports
+`MayHaveExecuted`, and exposes the exact transport error through `Cause`.
+It deliberately has no `Unwrap`: transport error identity is diagnostic
+data here, not outcome classification, so `errors.Is`/`As` cannot mistake
+it for a clean/pre-wire result. Zero-byte transport failures retain their
+existing public behavior.
+
+## 2026-07-17 — Zero-byte writes use the isolated transport-error surface
+
+The preceding `WriteError` decision left zero-byte transport failures
+verbatim. That preserved an older return shape but left the same identity
+collision open on the retry-safe side: a transport returning zero bytes
+with `context.Canceled` or a `*ProtocolError` made the closed connection
+look like a clean cancellation or reusable pre-wire rejection.
+
+`WriteError` therefore covers every actual transport write failure. Its
+private `mayHaveExecuted` bit is false after a proven zero-byte failure and
+true after any transferred byte; `Error`, `MayHaveExecuted`, and
+`errors.Is(ErrOutcomeUnknown)` expose that distinction without unwrapping
+the transport cause. A separate private closed disposition preserves raw
+`ErrClosed` when an operation finds the connection already closed or a
+concurrent `Close` wins. Clean zero-byte context cancellation and local
+outbound validation remain raw and leave the connection usable.
+
+## 2026-07-17 — An already-closed Ping write defers to the terminal owner
+
+The private closed disposition means the Ping writer observed a terminal
+transition; it does not identify that transition's root cause. Treating its
+generic `ErrClosed` as a keepalive failure could race a reader that had already
+closed the connection for a specific protocol or transport error but had not
+yet committed that error to the client.
+
+After resolving the Ping ticket, an already-closed write therefore waits for
+the existing terminal owner to commit through the client context and returns
+without proposing another cause. The impossible-response case remains an
+exception: its correlation fatality is already committed atomically by ticket
+resolution and is returned unchanged. Writer ownership stays held through the
+handoff so no later writer can manufacture a competing generic cause.

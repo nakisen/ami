@@ -248,54 +248,50 @@ func (c *Client) dispatch(ctx context.Context, action Action, id string, kind de
 }
 
 // writeAdmitted performs the bounded socket write and resolves the
-// ticket's write obligation, releasing the writer before waiting on
-// anything else. A non-nil error is final: every ticket obligation has
-// been resolved and any connection failure has already committed the
-// client's root cause.
+// ticket's write obligation. Successful writes release ownership after
+// their write commitment; failed writes retain it until every ticket
+// obligation and any death caused by this write have committed. A
+// non-nil error is final: every ticket obligation has been resolved,
+// and a failure of this write has already committed the client's root
+// cause. A connection found already closed is the exception — its root
+// cause belongs to the terminal path that closed it and may commit
+// only after this return.
 func (c *Client) writeAdmitted(ctx context.Context, action Action, id string, tkt demux.Ticket, w chan demux.Completion[Message], admit demux.AdmitOptions[Message]) error {
 	wctx, cancel := context.WithTimeout(ctx, c.sess.writeAttempt)
-	n, err := c.conn.writeAction(wctx, action, id)
+	disposition, err := c.conn.writeAction(wctx, action, id)
 	cancel()
-	c.releaseWriter()
-	if err == nil {
+	defer c.releaseWriter()
+	if disposition == writeComplete {
 		c.mu.Lock()
 		c.machine.CommitWrite(tkt)
 		c.mu.Unlock()
 		return nil
 	}
 
-	if pe, ok := errors.AsType[*ProtocolError](err); ok {
-		// Outbound validation rejected the action. Per the Conn error
-		// contract a *ProtocolError from writeAction is reported before
-		// any byte is written and leaves the connection usable, so the
-		// caller's bad input fails alone: definitely not sent, session
-		// alive.
-		if c.resolveNotSentLocked(tkt, w, admit) {
-			return &RequestError{Phase: PhaseWrite, ActionID: id, cause: pe}
+	if disposition != writeOutcomeUnknown {
+		// Only the Conn's private disposition establishes that no byte
+		// reached the transport. Error identity is deliberately ignored:
+		// a custom transport can return any error after transferring data.
+		cause := err
+		if fatal := c.resolveNotSent(tkt, w, admit); fatal != nil {
+			// A response to a provably unsent action is a correlation
+			// contradiction, never a successful user outcome. resolveNotSent
+			// commits client death atomically with detecting it.
+			cause = fatal
+		} else if disposition == writeNotSent {
+			// A zero-byte transport failure keeps the action retry-safe but
+			// the poisoned connection still terminates the client.
+			c.die(err)
 		}
-		return nil // a delivered completion won the race; the caller consumes it
+		return &RequestError{Phase: PhaseWrite, ActionID: id, cause: cause}
 	}
 
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		// Cleanly abandoned: provably zero bytes, connection usable.
-		if c.resolveNotSentLocked(tkt, w, admit) {
-			return &RequestError{Phase: PhaseWrite, ActionID: id, cause: err}
-		}
-		return nil // a delivered completion won the race; the caller consumes it
-	}
-
-	// The connection is closed. Zero written bytes is still definitely
-	// not sent; any written byte leaves the outcome unknown.
-	if n == 0 {
-		raced := !c.resolveNotSentLocked(tkt, w, admit)
-		c.die(err)
-		if raced {
-			return nil
-		}
-		return &RequestError{Phase: PhaseWrite, ActionID: id, cause: err}
-	}
-
-	// Partial write: the client dies with the transport cause, and the
+	// A write that transferred any bytes dies with the transport cause,
+	// regardless of what that error happens to match. The action outcome
+	// is unknown, and the ticket's remaining obligations resolve as
+	// tolerated post-death bookkeeping.
+	//
+	// The client dies with the transport cause, and the
 	// ticket's remaining obligations resolve as tolerated post-death
 	// bookkeeping — the write resolution and the provisional branch.
 	c.die(err)
@@ -312,37 +308,51 @@ func (c *Client) writeAdmitted(ctx context.Context, action Action, id string, tk
 	return &RequestError{Phase: PhaseWrite, ActionID: id, mayHaveExecuted: true, cause: err}
 }
 
-// resolveNotSentLocked resolves a failed write as definitely-not-sent,
-// releasing every reservation and provisional branch. It reports false
-// only when a delivered completion won the race — a server so broken it
-// answered an unsent action — in which case the write resolution is
-// bookkeeping only and the completion, left in the waiter channel, is
-// the committed outcome. A raced death completion does not flip the
-// outcome: zero bytes reached the wire, so definitely-not-sent stays
-// true and the death's unknown-outcome default is discarded along with
-// any provisional branch bookkeeping.
-func (c *Client) resolveNotSentLocked(tkt demux.Ticket, w chan demux.Completion[Message], admit demux.AdmitOptions[Message]) bool {
+// resolveNotSent resolves a failed write as definitely-not-sent,
+// releasing every reservation and provisional branch. A raced death
+// completion does not flip the outcome. A delivered response is instead
+// returned as a fatal correlation contradiction: a server cannot answer
+// an action whose first byte never reached the transport.
+func (c *Client) resolveNotSent(tkt demux.Ticket, w chan demux.Completion[Message], admit demux.AdmitOptions[Message]) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	select {
 	case cpl := <-w:
-		c.resolveDeadLocked(func() { c.machine.CommitWrite(tkt) })
-		if cpl.Delivered {
-			w <- cpl
-			return false
+		if !cpl.Delivered {
+			// AbortNotSent is explicitly legal after a death completion and
+			// releases its provisional branch bookkeeping as one operation.
+			c.resolveDeadLocked(func() { c.machine.AbortNotSent(tkt) })
+			c.mu.Unlock()
+			return nil
 		}
+
+		// Route already committed the contradictory response. Resolve the
+		// trailing write obligation and dispose of every provisional branch
+		// before committing the protocol cause below.
+		c.machine.CommitWrite(tkt)
 		if admit.Follow != nil {
-			c.resolveDeadLocked(func() { c.machine.CloseFollow(tkt) })
+			c.machine.CloseFollow(tkt)
 		}
-		if admit.List != nil {
-			c.resolveDeadLocked(func() { c.machine.CloseList(tkt) })
+		if admit.List != nil && responseSuccess(cpl.Response) {
+			id := c.machine.AdoptList(tkt)
+			c.machine.Close(id, c.now())
 		}
-		return true
+
+		// Commit the protocol fatality under the same lock that observed
+		// the impossible response. No newly admitted dispatch can slip
+		// between detection and the terminal state.
+		fx := c.machine.Kill(demux.ReasonResponseUnmatched)
+		fx.Fatal = &demux.Fatality{Reason: demux.ReasonResponseUnmatched}
+		c.applyLockedFx(fx)
+		fatal := c.causeLocked()
+		c.mu.Unlock()
+		c.finishTeardown()
+		return fatal
 	default:
 	}
 	delete(c.waiters, tkt)
 	c.machine.AbortNotSent(tkt)
-	return true
+	c.mu.Unlock()
+	return nil
 }
 
 // await blocks for the request's outcome. A completion and a context

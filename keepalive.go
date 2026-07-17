@@ -78,27 +78,45 @@ func (c *Client) ping() error {
 	c.waiters[tkt] = w
 	c.mu.Unlock()
 
-	n, err := c.conn.writeAction(wctx, action, id)
-	c.releaseWriter()
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			// A raced death completion resolves as not-sent too; the
-			// ctx check below (or die's first-winner rule) then keeps
-			// the real root cause.
-			if !c.resolveNotSentLocked(tkt, w, demux.AdmitOptions[Message]{}) {
+	disposition, err := c.conn.writeAction(wctx, action, id)
+	if disposition != writeComplete {
+		// A failed write retains ownership until its ticket bookkeeping and
+		// any terminal cause have committed. Otherwise a queued dispatch can
+		// observe the poisoned Conn first and replace the real write cause
+		// with ErrClosed.
+		defer c.releaseWriter()
+		if disposition != writeOutcomeUnknown {
+			// The Conn disposition, not the error chain, proves this Ping
+			// never reached the transport. A contradictory response is a
+			// fatal correlation failure.
+			if fatal := c.resolveNotSent(tkt, w, demux.AdmitOptions[Message]{}); fatal != nil {
+				return fatal
+			}
+			if disposition == writeClosed {
+				// Another terminal path closed the Conn and owns the real root
+				// cause. Wait for that path to commit instead of racing it with
+				// the generic ErrClosed observed here.
+				<-c.ctx.Done()
 				return nil
 			}
-			if c.ctx.Err() != nil {
-				return nil
+			if disposition == writeCanceled {
+				if c.ctx.Err() != nil {
+					return nil
+				}
+				cause := &KeepaliveError{Phase: "write", cause: ErrPingWriteTimeout}
+				c.die(cause)
+				return cause
 			}
-			return &KeepaliveError{Phase: "write", cause: ErrPingWriteTimeout}
-		}
-		// The connection is closed: the transport cause wins over a
-		// keepalive classification.
-		if n == 0 {
-			c.resolveNotSentLocked(tkt, w, demux.AdmitOptions[Message]{})
+			// Local validation cannot occur for the fixed Ping under a
+			// valid configuration; if it does, preserve that exact cause.
+			// A zero-byte transport failure likewise owns client death.
+			c.die(err)
 			return err
 		}
+
+		// One or more bytes reached the transport. Ignore what err matches:
+		// the connection and Ping outcome are unrecoverable.
+		c.die(err)
 		c.mu.Lock()
 		delete(c.waiters, tkt)
 		c.resolveDeadLocked(func() { c.machine.CommitWrite(tkt) })
@@ -108,6 +126,7 @@ func (c *Client) ping() error {
 	c.mu.Lock()
 	c.machine.CommitWrite(tkt)
 	c.mu.Unlock()
+	c.releaseWriter()
 
 	// A fully written Ping must receive its valid response in time.
 	respTimer := time.NewTimer(c.ka.Timeout)

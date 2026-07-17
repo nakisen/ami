@@ -161,11 +161,17 @@ directly.
   is reported as a context error.
 - Cancellation after a read has consumed any frame bytes, or after any
   action byte has been written, closes the connection unless that
-  operation already completed; it surfaces as the transport's deadline
-  error, not as a context error. A caller cannot resume a partially
-  consumed or emitted AMI frame.
-- A partial or otherwise ambiguous write poisons and closes the
-  connection.
+  operation already completed. A partial read surfaces as the transport's
+  deadline error, not as a context error. A caller cannot resume a
+  partially consumed or emitted AMI frame.
+- A transport write failure poisons and closes the connection. Low-level
+  `WriteAction` returns a sanitized `*WriteError`; `MayHaveExecuted()` and
+  `ErrOutcomeUnknown` distinguish an ambiguous write from a proven
+  zero-byte failure. `Cause()` exposes the transport error but the type
+  deliberately does not unwrap it. A context-like or `*ProtocolError`
+  transport cause therefore cannot impersonate a clean cancellation or
+  pre-wire validation rejection in `errors.Is`/`As`. An operation that
+  finds the connection already closed instead returns `ErrClosed`.
 - A protocol or inbound-limit violation closes the connection because
   subsequent framing cannot be trusted.
 - An optional partial-frame age bounds the wall-clock life of one inbound
@@ -217,6 +223,7 @@ executed the action:
 | Phase | Connection | Outcome classification |
 |---|---|---|
 | Context ends while waiting for admission/write ownership, before any byte | Remains usable | Definitely not sent |
+| Local outbound validation rejects the action before transport I/O | Remains usable | Definitely not sent |
 | Transport fails with zero action bytes written | Closed | Definitely not sent |
 | Any byte may have been written but the complete write is not proven | Closed | May have executed |
 | Complete action written; the request ends from context or client death before a response wins | Temporarily usable under bounded retirement when the transport survives; otherwise closed | May have executed |
@@ -230,6 +237,16 @@ executed the action:
 - Response-versus-cancellation races have one linearized winner. A success
   or rejection already committed to the request is not replaced by a
   concurrent context cancellation.
+- Byte disposition, not error identity, decides the write outcome. The
+  private connection result distinguishes local rejection, clean
+  cancellation, zero-byte transport failure, complete write, and a write
+  that transferred bytes; a custom `net.Conn` error that happens to wrap a
+  context or protocol error cannot turn a partial write into a retry-safe
+  failure.
+- A response observed for an action whose write is proven zero-byte is a
+  fatal correlation contradiction, never a successful operation. The
+  request remains definitely-not-sent while the client closes with the
+  sanitized protocol cause.
 - The library never retries an action automatically.
 - Capacity for every possible outcome-unknown retirement/drain record is
   reserved before the first action byte is written. Records are never
@@ -560,6 +577,12 @@ Sentinel errors support `errors.Is`:
 
 Typed errors support `errors.As`:
 
+- `WriteError`: a low-level transport write failure whose
+  `MayHaveExecuted` result — and match against `ErrOutcomeUnknown` — is
+  false for a proven zero-byte failure and true for an ambiguous write;
+  its explicit `Cause` accessor keeps the transport error out of
+  `errors.Is`/`As` traversal so clean cancellation and pre-wire validation
+  stay unambiguous.
 - `RequestError`: dispatch phase, wrapped cause, ActionID when assigned,
   and `MayHaveExecuted`.
 - `ResponseError`: stable sanitized `Error()` text plus explicit access to
@@ -583,11 +606,13 @@ Typed errors support `errors.As`:
 
 Malformed input never panics or grows retained memory without bound.
 Library-authored `Error()` text never formats raw AMI fields,
-server-controlled messages, endpoints, certificate names, or the wrapped
-OS/network/TLS cause. `Unwrap` still exposes the underlying cause for
-programmatic inspection; applications must classify and redact that
-potentially topology-bearing cause before logging it. Raw responses and
-events are explicit data that applications must classify separately.
+server-controlled messages, endpoints, certificate names, or an underlying
+OS/network/TLS cause. Typed wrappers normally expose that cause through
+`Unwrap`; `WriteError` deliberately uses only `Cause` to keep transport
+error identities out of `errors.Is`/`As`. Applications must
+classify and redact a potentially topology-bearing cause before logging it.
+Raw responses and events are explicit data that applications must classify
+separately.
 
 ## Limits and resource accounting
 
