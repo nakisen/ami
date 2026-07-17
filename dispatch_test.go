@@ -336,6 +336,87 @@ func TestAllClosesOnBreak(t *testing.T) {
 	}
 }
 
+// TestAdaptersHoldConsumerLease pins the ownership contract: inside an
+// All yield or a Consume handler, the adapter still owns the consumer
+// slot, so a concurrent bare Next is rejected rather than stealing the
+// next queued event.
+func TestAdaptersHoldConsumerLease(t *testing.T) {
+	t.Run("subscription all", func(t *testing.T) {
+		c, s := dialTest(t, nil)
+		sub, err := c.Subscribe(MatchEvents("Newchannel"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.event("Newchannel", "N", "1")
+		s.event("Newchannel", "N", "2")
+		s.sync(c)
+		var got []string
+		for ev, err := range sub.All(context.Background()) {
+			if err != nil {
+				t.Fatalf("All yielded error %v", err)
+			}
+			if _, nerr := sub.Next(context.Background()); nerr != errConcurrentConsumer {
+				t.Fatalf("Next inside All = %v, want the consumer-discipline rejection", nerr)
+			}
+			got = append(got, ev.Get("N"))
+			if len(got) == 2 {
+				break
+			}
+		}
+		if len(got) != 2 || got[0] != "1" || got[1] != "2" {
+			t.Fatalf("All delivered %v, want both events in order", got)
+		}
+	})
+
+	t.Run("subscription consume", func(t *testing.T) {
+		c, s := dialTest(t, nil)
+		sub, err := c.Subscribe(MatchEvents("Newchannel"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.event("Newchannel")
+		stop := errors.New("stop")
+		err = sub.Consume(context.Background(), func(Event) error {
+			if _, nerr := sub.Next(context.Background()); nerr != errConcurrentConsumer {
+				t.Fatalf("Next inside Consume = %v, want the consumer-discipline rejection", nerr)
+			}
+			return stop
+		})
+		if !errors.Is(err, stop) {
+			t.Fatalf("Consume() = %v, want the handler error", err)
+		}
+	})
+
+	t.Run("list all", func(t *testing.T) {
+		c, s := dialTest(t, nil)
+		started := make(chan struct{})
+		var list *List
+		go func() {
+			defer close(started)
+			act, _ := NewAction("QueueStatus")
+			list, _ = c.StartList(context.Background(), act, ListSpec{})
+		}()
+		act := s.readAction()
+		s.respond(act.id, "Success")
+		<-started
+		s.event("QueueMember", "ActionID", act.id, "Queue", "q1")
+		s.event("QueueStatusComplete", "ActionID", act.id, "EventList", "Complete")
+		var items int
+		for _, err := range list.All(context.Background()) {
+			if err != nil {
+				t.Fatalf("All yielded error %v", err)
+			}
+			if _, nerr := list.Next(context.Background()); nerr != errConcurrentConsumer {
+				t.Fatalf("Next inside list All = %v, want the consumer-discipline rejection", nerr)
+			}
+			items++
+		}
+		if items != 1 {
+			t.Fatalf("All delivered %d items, want 1", items)
+		}
+	})
+}
+
 func TestDoWithFollow(t *testing.T) {
 	c, s := dialTest(t, nil)
 	watcher, err := c.Subscribe()

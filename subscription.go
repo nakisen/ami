@@ -119,7 +119,10 @@ func (s *Subscription) Next(ctx context.Context) (Event, error) {
 	return Event{msg}, nil
 }
 
-// All returns a single-use iterator over the subscription. Once
+// All returns a single-use iterator over the subscription. It holds
+// the consumer slot for the entire iteration — yields included — so a
+// concurrent Next is rejected with the consumer-discipline error
+// instead of stealing queued events from between yields. Once
 // iteration begins, every exit path — clean end, terminal error, ctx
 // end, or an early break — closes the subscription exactly once; if
 // iteration never begins, the handle stays caller-owned and must still
@@ -128,13 +131,19 @@ func (s *Subscription) Next(ctx context.Context) (Event, error) {
 // error) pair.
 func (s *Subscription) All(ctx context.Context) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
+		if !s.busy.CompareAndSwap(false, true) {
+			yield(Event{}, errConcurrentConsumer)
+			return
+		}
 		if !s.adapted.CompareAndSwap(false, true) {
+			s.busy.Store(false)
 			yield(Event{}, errAdapterUsed)
 			return
 		}
+		defer s.busy.Store(false)
 		defer s.Close()
 		for {
-			ev, err := s.Next(ctx)
+			msg, err := s.c.takeBranch(ctx, s.b)
 			switch {
 			case err == io.EOF:
 				return
@@ -142,7 +151,7 @@ func (s *Subscription) All(ctx context.Context) iter.Seq2[Event, error] {
 				yield(Event{}, err)
 				return
 			}
-			if !yield(ev, nil) {
+			if !yield(Event{msg}, nil) {
 				return
 			}
 		}
@@ -153,22 +162,29 @@ func (s *Subscription) All(ctx context.Context) iter.Seq2[Event, error] {
 // event until ctx ends, the subscription terminates, or handler
 // returns a non-nil error, which stops consumption and is returned.
 // The handler runs off the read loop and may safely call Do. Consume
-// is single-use; once it begins, every exit path closes the
-// subscription exactly once. A clean terminal returns nil.
+// holds the consumer slot for its entire run — handler calls included
+// — so a concurrent Next is rejected instead of stealing events. It is
+// single-use; once it begins, every exit path closes the subscription
+// exactly once. A clean terminal returns nil.
 func (s *Subscription) Consume(ctx context.Context, handler func(Event) error) error {
+	if !s.busy.CompareAndSwap(false, true) {
+		return errConcurrentConsumer
+	}
 	if !s.adapted.CompareAndSwap(false, true) {
+		s.busy.Store(false)
 		return errAdapterUsed
 	}
+	defer s.busy.Store(false)
 	defer s.Close()
 	for {
-		ev, err := s.Next(ctx)
+		msg, err := s.c.takeBranch(ctx, s.b)
 		switch {
 		case err == io.EOF:
 			return nil
 		case err != nil:
 			return err
 		}
-		if err := handler(ev); err != nil {
+		if err := handler(Event{msg}); err != nil {
 			return err
 		}
 	}

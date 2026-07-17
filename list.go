@@ -46,19 +46,27 @@ func (l *List) Next(ctx context.Context) (Event, error) {
 }
 
 // All returns a single-use iterator over the list's items with the
-// same ownership rules as Subscription.All: once iteration begins,
-// every exit path closes the list exactly once. A clean completion
-// ends iteration without yielding an error; a terminal failure yields
-// exactly one final (zero Event, error) pair.
+// same ownership rules as Subscription.All: the consumer slot is held
+// for the entire iteration — a concurrent Next is rejected instead of
+// stealing items — and once iteration begins, every exit path closes
+// the list exactly once. A clean completion ends iteration without
+// yielding an error; a terminal failure yields exactly one final
+// (zero Event, error) pair.
 func (l *List) All(ctx context.Context) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
+		if !l.busy.CompareAndSwap(false, true) {
+			yield(Event{}, errConcurrentConsumer)
+			return
+		}
 		if !l.adapted.CompareAndSwap(false, true) {
+			l.busy.Store(false)
 			yield(Event{}, errAdapterUsed)
 			return
 		}
+		defer l.busy.Store(false)
 		defer l.Close()
 		for {
-			ev, err := l.Next(ctx)
+			msg, err := l.c.takeBranch(ctx, l.b)
 			switch {
 			case err == io.EOF:
 				return
@@ -66,7 +74,7 @@ func (l *List) All(ctx context.Context) iter.Seq2[Event, error] {
 				yield(Event{}, err)
 				return
 			}
-			if !yield(ev, nil) {
+			if !yield(Event{msg}, nil) {
 				return
 			}
 		}
