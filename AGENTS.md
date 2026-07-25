@@ -59,5 +59,5 @@ Asterisk Manager Interface (AMI). License: Apache-2.0. Root package `ami`.
   must produce no diff.
 - Tests are table-driven; timing-sensitive tests use `testing/synctest`
   (no bare sleeps). The wire parser carries a committed fuzz corpus.
-- Implementation order for v0: `internal/wire` → `Conn` → demultiplexer
-  state-machine design note → `Client` → `amitest`.
+- Implementation order for v0: `internal/wire` → framing layer →
+  demultiplexer state-machine design note → `Client` → `amitest`.

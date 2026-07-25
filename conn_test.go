@@ -16,18 +16,18 @@ import (
 	"github.com/nakisen/ami/internal/wire"
 )
 
-func newPipeConn(t *testing.T, limits WireLimits) (*Conn, net.Conn) {
+func newPipeFramer(t *testing.T, limits WireLimits) (*framer, net.Conn) {
 	t.Helper()
 	client, server := net.Pipe()
-	c, err := NewConn(client, limits)
+	f, err := newFramer(client, limits)
 	if err != nil {
-		t.Fatalf("NewConn() error = %v", err)
+		t.Fatalf("newFramer() error = %v", err)
 	}
 	t.Cleanup(func() {
-		c.Close()
+		f.close()
 		server.Close()
 	})
-	return c, server
+	return f, server
 }
 
 func mustAction(t *testing.T, name string, fields ...Field) Action {
@@ -51,7 +51,8 @@ type signalConn struct {
 
 // writeResultConn reports one caller-selected write result without
 // changing its cause. It models transports whose error identity collides
-// with the clean/pre-wire meanings on Conn's public error surface.
+// with the clean and pre-wire meanings on the framing layer's error
+// surface.
 type writeResultConn struct {
 	net.Conn
 	n   int
@@ -80,56 +81,56 @@ func (c *signalConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
-func TestNewConnValidation(t *testing.T) {
-	if _, err := NewConn(nil, WireLimits{}); err == nil {
-		t.Fatal("NewConn(nil) succeeded")
+func TestNewFramerValidation(t *testing.T) {
+	if _, err := newFramer(nil, WireLimits{}); err == nil {
+		t.Fatal("newFramer(nil) succeeded")
 	}
 	client, server := net.Pipe()
 	t.Cleanup(func() {
 		client.Close()
 		server.Close()
 	})
-	if _, err := NewConn(client, WireLimits{MaxLineBytes: -1}); err == nil || !strings.Contains(err.Error(), "MaxLineBytes") {
-		t.Fatalf("NewConn with negative limit: err = %v, want error naming MaxLineBytes", err)
+	if _, err := newFramer(client, WireLimits{MaxLineBytes: -1}); err == nil || !strings.Contains(err.Error(), "MaxLineBytes") {
+		t.Fatalf("newFramer with negative limit: err = %v, want error naming MaxLineBytes", err)
 	}
-	if _, err := NewConn(client, WireLimits{MaxPartialFrameAge: -time.Second}); err == nil || !strings.Contains(err.Error(), "MaxPartialFrameAge") {
-		t.Fatalf("NewConn with negative age: err = %v, want error naming MaxPartialFrameAge", err)
+	if _, err := newFramer(client, WireLimits{MaxPartialFrameAge: -time.Second}); err == nil || !strings.Contains(err.Error(), "MaxPartialFrameAge") {
+		t.Fatalf("newFramer with negative age: err = %v, want error naming MaxPartialFrameAge", err)
 	}
 	// Constructor failure leaves ownership with the caller: the same
 	// connection must still be fully usable.
-	c, err := NewConn(client, WireLimits{})
+	f, err := newFramer(client, WireLimits{})
 	if err != nil {
-		t.Fatalf("NewConn() after failed construction: %v", err)
+		t.Fatalf("newFramer() after failed construction: %v", err)
 	}
 	go server.Write([]byte("Event: Reused\r\n\r\n"))
-	msg, err := c.ReadMessage(context.Background())
+	msg, err := f.readMessage(context.Background())
 	if err != nil || msg.Get("Event") != "Reused" {
-		t.Fatalf("ReadMessage() = (%v, %v)", msg, err)
+		t.Fatalf("readMessage() = (%v, %v)", msg, err)
 	}
 }
 
-func TestConnReadBannerAndMessage(t *testing.T) {
-	c, server := newPipeConn(t, WireLimits{})
+func TestFramerReadBannerAndMessage(t *testing.T) {
+	f, server := newPipeFramer(t, WireLimits{})
 	go server.Write([]byte("Asterisk Call Manager/5.0.2\r\nEvent: FullyBooted\r\nUptime: 1\r\n\r\n"))
-	banner, err := c.ReadBanner(context.Background())
+	banner, err := f.readBanner(context.Background())
 	if err != nil || banner != "Asterisk Call Manager/5.0.2" {
-		t.Fatalf("ReadBanner() = (%q, %v)", banner, err)
+		t.Fatalf("readBanner() = (%q, %v)", banner, err)
 	}
-	msg, err := c.ReadMessage(context.Background())
+	msg, err := f.readMessage(context.Background())
 	if err != nil {
-		t.Fatalf("ReadMessage() error = %v", err)
+		t.Fatalf("readMessage() error = %v", err)
 	}
 	if msg.Get("Event") != "FullyBooted" || msg.Get("Uptime") != "1" {
 		t.Fatalf("unexpected message: %v", msg)
 	}
 }
 
-func TestConnReadMessageLegacyCommand(t *testing.T) {
-	c, server := newPipeConn(t, WireLimits{})
+func TestFramerReadMessageLegacyCommand(t *testing.T) {
+	f, server := newPipeFramer(t, WireLimits{})
 	go server.Write([]byte("Response: Follows\r\nPrivilege: Command\r\nActionID: 7\r\nrow one\nrow two\n--END COMMAND--\r\n\r\n"))
-	msg, err := c.ReadMessage(context.Background())
+	msg, err := f.readMessage(context.Background())
 	if err != nil {
-		t.Fatalf("ReadMessage() error = %v", err)
+		t.Fatalf("readMessage() error = %v", err)
 	}
 	if got, want := msg.Values("Output"), []string{"row one", "row two"}; !equalStrings(got, want) {
 		t.Fatalf("Values(Output) = %q, want %q", got, want)
@@ -151,7 +152,7 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-func TestConnWriteActionWire(t *testing.T) {
+func TestFramerWriteActionWire(t *testing.T) {
 	tests := []struct {
 		name     string
 		actionID string
@@ -170,7 +171,7 @@ func TestConnWriteActionWire(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, server := newPipeConn(t, WireLimits{})
+			f, server := newPipeFramer(t, WireLimits{})
 			act := mustAction(t, "Originate",
 				Field{Key: "Channel", Value: "PJSIP/synthetic-0001"},
 				Field{Key: "Variable", Value: "a=1"},
@@ -182,8 +183,8 @@ func TestConnWriteActionWire(t *testing.T) {
 				_, err := io.ReadFull(server, got)
 				readDone <- err
 			}()
-			if err := c.WriteAction(context.Background(), act, tt.actionID); err != nil {
-				t.Fatalf("WriteAction() error = %v", err)
+			if d, err := f.writeAction(context.Background(), act, tt.actionID); d != writeComplete || err != nil {
+				t.Fatalf("writeAction() = (%v, %v), want writeComplete", d, err)
 			}
 			if err := <-readDone; err != nil {
 				t.Fatalf("reading the frame: %v", err)
@@ -195,61 +196,61 @@ func TestConnWriteActionWire(t *testing.T) {
 	}
 }
 
-func TestConnWriteActionValidationLeavesUsable(t *testing.T) {
+func TestFramerWriteActionValidationLeavesUsable(t *testing.T) {
 	// "Action: Ping\r\n\r\n" is exactly 16 bytes, so the Ping without an
 	// ActionID fits and anything more is rejected before I/O.
-	c, server := newPipeConn(t, WireLimits{MaxActionBytes: 16})
+	f, server := newPipeFramer(t, WireLimits{MaxActionBytes: 16})
 	ping := mustAction(t, "Ping")
 
 	var pe *ProtocolError
-	if err := c.WriteAction(context.Background(), Action{}, ""); !errors.As(err, &pe) ||
-		pe.Category != "envelope" || pe.Dimension != "empty action name" {
-		t.Fatalf("zero action: err = %v, want envelope/empty action name", err)
+	d, err := f.writeAction(context.Background(), Action{}, "")
+	if d != writeRejected || !errors.As(err, &pe) || pe.Category != "envelope" || pe.Dimension != "empty action name" {
+		t.Fatalf("zero action: (%v, %v), want writeRejected and envelope/empty action name", d, err)
 	}
-	if err := c.WriteAction(context.Background(), ping, "a\r\nb"); !errors.As(err, &pe) ||
-		pe.Category != "envelope" || pe.Dimension != "action id" {
-		t.Fatalf("bad action id: err = %v, want envelope/action id", err)
+	d, err = f.writeAction(context.Background(), ping, "a\r\nb")
+	if d != writeRejected || !errors.As(err, &pe) || pe.Category != "envelope" || pe.Dimension != "action id" {
+		t.Fatalf("bad action id: (%v, %v), want writeRejected and envelope/action id", d, err)
 	}
-	if err := c.WriteAction(context.Background(), ping, "0123456789"); !errors.As(err, &pe) ||
-		pe.Category != "limit" || pe.Dimension != "MaxActionBytes" {
-		t.Fatalf("oversized action: err = %v, want limit/MaxActionBytes", err)
+	d, err = f.writeAction(context.Background(), ping, "0123456789")
+	if d != writeRejected || !errors.As(err, &pe) || pe.Category != "limit" || pe.Dimension != "MaxActionBytes" {
+		t.Fatalf("oversized action: (%v, %v), want writeRejected and limit/MaxActionBytes", d, err)
 	}
 
 	// Every rejection above happened before I/O; the connection works.
 	go io.Copy(io.Discard, server)
-	if err := c.WriteAction(context.Background(), ping, ""); err != nil {
-		t.Fatalf("WriteAction() after rejections: %v", err)
+	if d, err := f.writeAction(context.Background(), ping, ""); d != writeComplete || err != nil {
+		t.Fatalf("writeAction() after rejections: (%v, %v)", d, err)
 	}
 }
 
-func TestConnPreCanceledContext(t *testing.T) {
-	c, server := newPipeConn(t, WireLimits{})
+func TestFramerPreCanceledContext(t *testing.T) {
+	f, server := newPipeFramer(t, WireLimits{})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := c.ReadMessage(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("ReadMessage(canceled) = %v, want context.Canceled", err)
+	if _, err := f.readMessage(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("readMessage(canceled) = %v, want context.Canceled", err)
 	}
 	ping := mustAction(t, "Ping")
-	if err := c.WriteAction(ctx, ping, ""); !errors.Is(err, context.Canceled) {
-		t.Fatalf("WriteAction(canceled) = %v, want context.Canceled", err)
+	if d, err := f.writeAction(ctx, ping, ""); d != writeCanceled || !errors.Is(err, context.Canceled) {
+		t.Fatalf("writeAction(canceled) = (%v, %v), want writeCanceled and context.Canceled", d, err)
 	}
 	// No I/O happened; the connection is untouched and usable.
 	go server.Write([]byte("Event: Alive\r\n\r\n"))
-	msg, err := c.ReadMessage(context.Background())
+	msg, err := f.readMessage(context.Background())
 	if err != nil || msg.Get("Event") != "Alive" {
-		t.Fatalf("ReadMessage() after pre-canceled ops = (%v, %v)", msg, err)
+		t.Fatalf("readMessage() after pre-canceled ops = (%v, %v)", msg, err)
 	}
 }
 
-func TestConnReadCancelCleanLeavesUsable(t *testing.T) {
+func TestFramerReadCancelCleanLeavesUsable(t *testing.T) {
 	client, server := net.Pipe()
 	sc := newSignalConn(client)
-	c, err := NewConn(sc, WireLimits{})
+	f, err := newFramer(sc, WireLimits{})
 	if err != nil {
-		t.Fatalf("NewConn() error = %v", err)
+		t.Fatalf("newFramer() error = %v", err)
 	}
 	t.Cleanup(func() {
-		c.Close()
+		f.close()
 		server.Close()
 	})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -257,24 +258,24 @@ func TestConnReadCancelCleanLeavesUsable(t *testing.T) {
 		<-sc.readEntered
 		cancel()
 	}()
-	if _, err := c.ReadMessage(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("ReadMessage() = %v, want context.Canceled", err)
+	if _, err := f.readMessage(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("readMessage() = %v, want context.Canceled", err)
 	}
 	// No frame byte was consumed, so the connection must remain usable
 	// and the poked deadline must have been cleared.
 	go server.Write([]byte("Event: Later\r\n\r\n"))
-	msg, err := c.ReadMessage(context.Background())
+	msg, err := f.readMessage(context.Background())
 	if err != nil || msg.Get("Event") != "Later" {
-		t.Fatalf("ReadMessage() after clean cancel = (%v, %v)", msg, err)
+		t.Fatalf("readMessage() after clean cancel = (%v, %v)", msg, err)
 	}
 }
 
-func TestConnReadCancelMidFrameCloses(t *testing.T) {
-	c, server := newPipeConn(t, WireLimits{})
+func TestFramerReadCancelMidFrameCloses(t *testing.T) {
+	f, server := newPipeFramer(t, WireLimits{})
 	ctx, cancel := context.WithCancel(context.Background())
 	resCh := make(chan error, 1)
 	go func() {
-		_, err := c.ReadMessage(ctx)
+		_, err := f.readMessage(ctx)
 		resCh <- err
 	}()
 	// A pipe write completes only when fully consumed, so after Write
@@ -288,22 +289,22 @@ func TestConnReadCancelMidFrameCloses(t *testing.T) {
 		t.Fatal("mid-frame interruption surfaced as a clean context error")
 	}
 	if !errors.Is(err, os.ErrDeadlineExceeded) {
-		t.Fatalf("ReadMessage() = %v, want the transport deadline error", err)
+		t.Fatalf("readMessage() = %v, want the transport deadline error", err)
 	}
-	if _, err := c.ReadMessage(context.Background()); !errors.Is(err, ErrClosed) {
-		t.Fatalf("ReadMessage() after poisoning = %v, want ErrClosed", err)
+	if _, err := f.readMessage(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("readMessage() after poisoning = %v, want ErrClosed", err)
 	}
 }
 
-func TestConnWriteCancelZeroBytesLeavesUsable(t *testing.T) {
+func TestFramerWriteCancelZeroBytesLeavesUsable(t *testing.T) {
 	client, server := net.Pipe()
 	sc := newSignalConn(client)
-	c, err := NewConn(sc, WireLimits{})
+	f, err := newFramer(sc, WireLimits{})
 	if err != nil {
-		t.Fatalf("NewConn() error = %v", err)
+		t.Fatalf("newFramer() error = %v", err)
 	}
 	t.Cleanup(func() {
-		c.Close()
+		f.close()
 		server.Close()
 	})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -313,17 +314,17 @@ func TestConnWriteCancelZeroBytesLeavesUsable(t *testing.T) {
 	}()
 	ping := mustAction(t, "Ping")
 	// Nobody reads the server end, so the write cannot transfer a byte.
-	if err := c.WriteAction(ctx, ping, ""); !errors.Is(err, context.Canceled) {
-		t.Fatalf("WriteAction() = %v, want context.Canceled", err)
+	if d, err := f.writeAction(ctx, ping, ""); d != writeCanceled || !errors.Is(err, context.Canceled) {
+		t.Fatalf("writeAction() = (%v, %v), want writeCanceled and context.Canceled", d, err)
 	}
 	go io.Copy(io.Discard, server)
-	if err := c.WriteAction(context.Background(), ping, ""); err != nil {
-		t.Fatalf("WriteAction() after zero-byte cancel = %v", err)
+	if d, err := f.writeAction(context.Background(), ping, ""); d != writeComplete || err != nil {
+		t.Fatalf("writeAction() after zero-byte cancel = (%v, %v)", d, err)
 	}
 }
 
-func TestConnWriteCancelPartialCloses(t *testing.T) {
-	c, server := newPipeConn(t, WireLimits{})
+func TestFramerWriteCancelPartialCloses(t *testing.T) {
+	f, server := newPipeFramer(t, WireLimits{})
 	ctx, cancel := context.WithCancel(context.Background())
 	consumed := make(chan struct{})
 	go func() {
@@ -335,87 +336,80 @@ func TestConnWriteCancelPartialCloses(t *testing.T) {
 		cancel()
 	}()
 	ping := mustAction(t, "Ping")
-	err := c.WriteAction(ctx, ping, "12345")
-	var we *WriteError
-	if !errors.As(err, &we) || !errors.Is(err, ErrOutcomeUnknown) {
-		t.Fatalf("WriteAction() = %v, want outcome-unknown *WriteError", err)
+	d, err := f.writeAction(ctx, ping, "12345")
+	if d != writeOutcomeUnknown {
+		t.Fatalf("writeAction() disposition = %v, want writeOutcomeUnknown", d)
 	}
+	// The interrupted write transferred bytes, so its outcome is unknown
+	// even though the interruption came from a canceled context: the
+	// disposition reports that, and the error stays the transport's own.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatal("partial write surfaced as a clean context error")
+		t.Fatalf("writeAction() error = %v, want the transport error, not a clean context error", err)
 	}
-	if !errors.Is(we.Cause(), os.ErrDeadlineExceeded) {
-		t.Fatalf("WriteError.Cause() = %v, want the transport deadline error", we.Cause())
+	if !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("writeAction() error = %v, want the transport deadline error", err)
 	}
-	if err := c.WriteAction(context.Background(), ping, ""); !errors.Is(err, ErrClosed) {
-		t.Fatalf("WriteAction() after poisoning = %v, want ErrClosed", err)
+	if d, err := f.writeAction(context.Background(), ping, ""); d != writeClosed || !errors.Is(err, ErrClosed) {
+		t.Fatalf("writeAction() after poisoning = (%v, %v), want writeClosed and ErrClosed", d, err)
 	}
 }
 
-func TestConnWriteFailureCauseCannotMasquerade(t *testing.T) {
+// TestFramerWriteDispositionIgnoresCauseIdentity pins the rule the session
+// layer's outcome taxonomy rests on: only the byte disposition says
+// whether an action may have reached the server. A transport may return
+// any error value alongside any byte count, including one that matches a
+// clean cancellation or a pre-wire validation rejection.
+func TestFramerWriteDispositionIgnoresCauseIdentity(t *testing.T) {
 	protocolCause := &ProtocolError{Category: "synthetic", Dimension: "transport"}
 	tests := []struct {
-		name            string
-		n               int
-		cause           error
-		mayHaveExecuted bool
-		wantError       string
+		name  string
+		n     int
+		cause error
+		want  writeDisposition
 	}{
-		{name: "zero-byte context-like cause", cause: context.Canceled, wantError: "ami: action write failed"},
-		{name: "zero-byte protocol-like cause", cause: protocolCause, wantError: "ami: action write failed"},
-		{name: "partial context-like cause", n: 1, cause: context.Canceled, mayHaveExecuted: true, wantError: "ami: action write failed (outcome unknown)"},
-		{name: "partial protocol-like cause", n: 1, cause: protocolCause, mayHaveExecuted: true, wantError: "ami: action write failed (outcome unknown)"},
+		{name: "zero-byte context-like cause", cause: context.Canceled, want: writeNotSent},
+		{name: "zero-byte protocol-like cause", cause: protocolCause, want: writeNotSent},
+		{name: "partial context-like cause", n: 1, cause: context.Canceled, want: writeOutcomeUnknown},
+		{name: "partial protocol-like cause", n: 1, cause: protocolCause, want: writeOutcomeUnknown},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			client, server := net.Pipe()
 			transport := &writeResultConn{Conn: client, n: tt.n, err: tt.cause}
-			c, err := NewConn(transport, WireLimits{})
+			f, err := newFramer(transport, WireLimits{})
 			if err != nil {
-				t.Fatalf("NewConn() error = %v", err)
+				t.Fatalf("newFramer() error = %v", err)
 			}
 			t.Cleanup(func() {
-				c.Close()
+				f.close()
 				server.Close()
 			})
 
 			ping := mustAction(t, "Ping")
-			err = c.WriteAction(context.Background(), ping, "synthetic-id")
-			var we *WriteError
-			if !errors.As(err, &we) || we.MayHaveExecuted() != tt.mayHaveExecuted {
-				t.Fatalf("WriteAction() = %v, want *WriteError with MayHaveExecuted=%v", err, tt.mayHaveExecuted)
+			d, err := f.writeAction(context.Background(), ping, "synthetic-id")
+			if d != tt.want {
+				t.Fatalf("writeAction() disposition = %v, want %v", d, tt.want)
 			}
-			if got := errors.Is(err, ErrOutcomeUnknown); got != tt.mayHaveExecuted {
-				t.Fatalf("errors.Is(WriteAction(), ErrOutcomeUnknown) = %v, want %v", got, tt.mayHaveExecuted)
+			if err != tt.cause {
+				t.Fatalf("writeAction() error = %v, want the original cause %v", err, tt.cause)
 			}
-			if got := we.Cause(); got != tt.cause {
-				t.Fatalf("WriteError.Cause() = %v, want original cause %v", got, tt.cause)
-			}
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				t.Fatal("transport write failure exposed a context-like cause through errors.Is")
-			}
-			if _, ok := errors.AsType[*ProtocolError](err); ok {
-				t.Fatal("transport write failure exposed a protocol-like cause through errors.As")
-			}
-			if got := err.Error(); got != tt.wantError {
-				t.Fatalf("WriteError.Error() = %q, want stable sanitized text", got)
-			}
-			closedErr := c.WriteAction(context.Background(), ping, "")
-			if !errors.Is(closedErr, ErrClosed) {
-				t.Fatalf("WriteAction() after transport failure = %v, want ErrClosed", closedErr)
-			}
-			if _, ok := errors.AsType[*WriteError](closedErr); ok {
-				t.Fatal("operation on closed Conn returned a *WriteError")
+			// A failed transport write closes the connection, and a
+			// connection found already closed reports that instead of a
+			// byte-transfer disposition.
+			d, closedErr := f.writeAction(context.Background(), ping, "")
+			if d != writeClosed || !errors.Is(closedErr, ErrClosed) {
+				t.Fatalf("writeAction() after transport failure = (%v, %v), want writeClosed and ErrClosed", d, closedErr)
 			}
 		})
 	}
 }
 
-func TestConnPartialFrameAgeExpires(t *testing.T) {
-	c, server := newPipeConn(t, WireLimits{MaxPartialFrameAge: time.Nanosecond})
+func TestFramerPartialFrameAgeExpires(t *testing.T) {
+	f, server := newPipeFramer(t, WireLimits{MaxPartialFrameAge: time.Nanosecond})
 	resCh := make(chan error, 1)
 	go func() {
-		_, err := c.ReadMessage(context.Background())
+		_, err := f.readMessage(context.Background())
 		resCh <- err
 	}()
 	// A pipe write completes only when fully consumed, so after Write
@@ -427,39 +421,39 @@ func TestConnPartialFrameAgeExpires(t *testing.T) {
 	err := <-resCh
 	var pe *ProtocolError
 	if !errors.As(err, &pe) || pe.Category != "limit" || pe.Dimension != "MaxPartialFrameAge" {
-		t.Fatalf("ReadMessage() = %v, want limit/MaxPartialFrameAge", err)
+		t.Fatalf("readMessage() = %v, want limit/MaxPartialFrameAge", err)
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("partial-frame expiry surfaced as a context error")
 	}
-	if _, err := c.ReadMessage(context.Background()); !errors.Is(err, ErrClosed) {
-		t.Fatalf("ReadMessage() after expiry = %v, want ErrClosed", err)
+	if _, err := f.readMessage(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("readMessage() after expiry = %v, want ErrClosed", err)
 	}
 }
 
-// TestConnPartialFrameAgeArmsAtFirstByte pins the first-byte contract
+// TestFramerPartialFrameAgeArmsAtFirstByte pins the first-byte contract
 // end to end: a single byte of a never-completing first line — the
 // banner included — must start the frame clock, so the read fails on
 // the age instead of hanging forever on a stalled peer.
-func TestConnPartialFrameAgeArmsAtFirstByte(t *testing.T) {
+func TestFramerPartialFrameAgeArmsAtFirstByte(t *testing.T) {
 	tests := []struct {
 		name string
-		read func(*Conn) error
+		read func(*framer) error
 	}{
-		{"banner", func(c *Conn) error {
-			_, err := c.ReadBanner(context.Background())
+		{"banner", func(f *framer) error {
+			_, err := f.readBanner(context.Background())
 			return err
 		}},
-		{"message", func(c *Conn) error {
-			_, err := c.ReadMessage(context.Background())
+		{"message", func(f *framer) error {
+			_, err := f.readMessage(context.Background())
 			return err
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, server := newPipeConn(t, WireLimits{MaxPartialFrameAge: 50 * time.Millisecond})
+			f, server := newPipeFramer(t, WireLimits{MaxPartialFrameAge: 50 * time.Millisecond})
 			resCh := make(chan error, 1)
-			go func() { resCh <- tt.read(c) }()
+			go func() { resCh <- tt.read(f) }()
 			if _, err := server.Write([]byte("A")); err != nil {
 				t.Fatalf("priming the first byte: %v", err)
 			}
@@ -472,15 +466,15 @@ func TestConnPartialFrameAgeArmsAtFirstByte(t *testing.T) {
 	}
 }
 
-func TestConnPartialFrameAgeIdleUnaffected(t *testing.T) {
+func TestFramerPartialFrameAgeIdleUnaffected(t *testing.T) {
 	client, server := net.Pipe()
 	sc := newSignalConn(client)
-	c, err := NewConn(sc, WireLimits{MaxPartialFrameAge: time.Nanosecond})
+	f, err := newFramer(sc, WireLimits{MaxPartialFrameAge: time.Nanosecond})
 	if err != nil {
-		t.Fatalf("NewConn() error = %v", err)
+		t.Fatalf("newFramer() error = %v", err)
 	}
 	t.Cleanup(func() {
-		c.Close()
+		f.close()
 		server.Close()
 	})
 	// An idle wait holds no pending frame, so even the tightest possible
@@ -490,22 +484,22 @@ func TestConnPartialFrameAgeIdleUnaffected(t *testing.T) {
 		<-sc.readEntered
 		cancel()
 	}()
-	if _, err := c.ReadMessage(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("idle ReadMessage() = %v, want context.Canceled", err)
+	if _, err := f.readMessage(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("idle readMessage() = %v, want context.Canceled", err)
 	}
 	// A frame delivered in one chunk parses from the buffer without a
 	// further stream read, so even a 1ns age admits it.
 	go server.Write([]byte("Event: Quick\r\n\r\n"))
-	msg, err := c.ReadMessage(context.Background())
+	msg, err := f.readMessage(context.Background())
 	if err != nil || msg.Get("Event") != "Quick" {
-		t.Fatalf("ReadMessage() = (%v, %v)", msg, err)
+		t.Fatalf("readMessage() = (%v, %v)", msg, err)
 	}
 	// The success disarmed the long-expired deadline: the next read must
 	// block on the idle stream instead of failing instantly.
 	go server.Write([]byte("Event: Again\r\n\r\n"))
-	msg, err = c.ReadMessage(context.Background())
+	msg, err = f.readMessage(context.Background())
 	if err != nil || msg.Get("Event") != "Again" {
-		t.Fatalf("ReadMessage() after disarm = (%v, %v)", msg, err)
+		t.Fatalf("readMessage() after disarm = (%v, %v)", msg, err)
 	}
 }
 
@@ -530,14 +524,14 @@ func (d *deadlineRecorder) snapshot() []time.Time {
 	return slices.Clone(d.sets)
 }
 
-func TestConnFrameStartYieldsToCancelPoke(t *testing.T) {
+func TestFramerFrameStartYieldsToCancelPoke(t *testing.T) {
 	rec := &deadlineRecorder{}
-	c := &Conn{conn: rec, age: time.Minute}
-	c.frameStarted() // no poke in flight: arms the age deadline
-	c.readPoke()     // the cancellation poke takes ownership
-	c.frameStarted() // must not extend the poked deadline
-	c.readClear()    // release re-enables arming
-	c.frameStarted()
+	f := &framer{conn: rec, age: time.Minute}
+	f.frameStarted() // no poke in flight: arms the age deadline
+	f.readPoke()     // the cancellation poke takes ownership
+	f.frameStarted() // must not extend the poked deadline
+	f.readClear()    // release re-enables arming
+	f.frameStarted()
 	got := rec.snapshot()
 	if len(got) != 4 {
 		t.Fatalf("SetReadDeadline calls = %d (%v), want 4: the poked frame start must not set a deadline", len(got), got)
@@ -557,68 +551,68 @@ func TestConnFrameStartYieldsToCancelPoke(t *testing.T) {
 	}
 }
 
-func TestConnInboundViolationCloses(t *testing.T) {
-	c, server := newPipeConn(t, WireLimits{MaxLineBytes: 8})
+func TestFramerInboundViolationCloses(t *testing.T) {
+	f, server := newPipeFramer(t, WireLimits{MaxLineBytes: 8})
 	go server.Write([]byte("A: 123456789\r\n\r\n"))
-	_, err := c.ReadMessage(context.Background())
+	_, err := f.readMessage(context.Background())
 	var pe *ProtocolError
 	if !errors.As(err, &pe) || pe.Category != "limit" || pe.Dimension != "MaxLineBytes" {
-		t.Fatalf("ReadMessage() = %v, want limit/MaxLineBytes", err)
+		t.Fatalf("readMessage() = %v, want limit/MaxLineBytes", err)
 	}
-	if _, err := c.ReadMessage(context.Background()); !errors.Is(err, ErrClosed) {
-		t.Fatalf("ReadMessage() after violation = %v, want ErrClosed", err)
+	if _, err := f.readMessage(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("readMessage() after violation = %v, want ErrClosed", err)
 	}
 }
 
-func TestConnRemoteClose(t *testing.T) {
+func TestFramerRemoteClose(t *testing.T) {
 	t.Run("at message boundary", func(t *testing.T) {
-		c, server := newPipeConn(t, WireLimits{})
+		f, server := newPipeFramer(t, WireLimits{})
 		server.Close()
-		if _, err := c.ReadMessage(context.Background()); !errors.Is(err, io.EOF) {
-			t.Fatalf("ReadMessage() = %v, want io.EOF", err)
+		if _, err := f.readMessage(context.Background()); !errors.Is(err, io.EOF) {
+			t.Fatalf("readMessage() = %v, want io.EOF", err)
 		}
-		if _, err := c.ReadMessage(context.Background()); !errors.Is(err, ErrClosed) {
-			t.Fatalf("ReadMessage() after EOF = %v, want ErrClosed", err)
+		if _, err := f.readMessage(context.Background()); !errors.Is(err, ErrClosed) {
+			t.Fatalf("readMessage() after EOF = %v, want ErrClosed", err)
 		}
 	})
 	t.Run("inside a frame", func(t *testing.T) {
-		c, server := newPipeConn(t, WireLimits{})
+		f, server := newPipeFramer(t, WireLimits{})
 		go func() {
 			server.Write([]byte("Event: X\r\n"))
 			server.Close()
 		}()
-		if _, err := c.ReadMessage(context.Background()); !errors.Is(err, io.ErrUnexpectedEOF) {
-			t.Fatalf("ReadMessage() = %v, want io.ErrUnexpectedEOF", err)
+		if _, err := f.readMessage(context.Background()); !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("readMessage() = %v, want io.ErrUnexpectedEOF", err)
 		}
 	})
 }
 
-func TestConnClose(t *testing.T) {
+func TestFramerClose(t *testing.T) {
 	client, server := net.Pipe()
 	sc := newSignalConn(client)
-	c, err := NewConn(sc, WireLimits{})
+	f, err := newFramer(sc, WireLimits{})
 	if err != nil {
-		t.Fatalf("NewConn() error = %v", err)
+		t.Fatalf("newFramer() error = %v", err)
 	}
 	t.Cleanup(func() { server.Close() })
 	go func() {
 		<-sc.readEntered
-		c.Close()
+		f.close()
 	}()
-	if _, err := c.ReadMessage(context.Background()); !errors.Is(err, ErrClosed) {
-		t.Fatalf("ReadMessage() interrupted by Close = %v, want ErrClosed", err)
+	if _, err := f.readMessage(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("readMessage() interrupted by close = %v, want ErrClosed", err)
 	}
-	if err := c.Close(); err != nil {
-		t.Fatalf("second Close() = %v, want nil", err)
+	if err := f.close(); err != nil {
+		t.Fatalf("second close() = %v, want nil", err)
 	}
 	ping := mustAction(t, "Ping")
-	if err := c.WriteAction(context.Background(), ping, ""); !errors.Is(err, ErrClosed) {
-		t.Fatalf("WriteAction() after Close = %v, want ErrClosed", err)
+	if d, err := f.writeAction(context.Background(), ping, ""); d != writeClosed || !errors.Is(err, ErrClosed) {
+		t.Fatalf("writeAction() after close = (%v, %v), want writeClosed and ErrClosed", d, err)
 	}
 }
 
-func TestConnConcurrentReadWrite(t *testing.T) {
-	c, server := newPipeConn(t, WireLimits{})
+func TestFramerConcurrentReadWrite(t *testing.T) {
+	f, server := newPipeFramer(t, WireLimits{})
 	const n = 25
 	go func() {
 		for i := range n {
@@ -636,7 +630,7 @@ func TestConnConcurrentReadWrite(t *testing.T) {
 			return
 		}
 		for range n {
-			if err := c.WriteAction(context.Background(), ping, "id"); err != nil {
+			if _, err := f.writeAction(context.Background(), ping, "id"); err != nil {
 				writeDone <- err
 				return
 			}
@@ -644,9 +638,9 @@ func TestConnConcurrentReadWrite(t *testing.T) {
 		writeDone <- nil
 	}()
 	for i := range n {
-		msg, err := c.ReadMessage(context.Background())
+		msg, err := f.readMessage(context.Background())
 		if err != nil {
-			t.Fatalf("ReadMessage() %d error = %v", i, err)
+			t.Fatalf("readMessage() %d error = %v", i, err)
 		}
 		if want := fmt.Sprintf("E%d", i); msg.Get("Event") != want {
 			t.Fatalf("message %d = %q, want %q", i, msg.Get("Event"), want)

@@ -78,22 +78,22 @@ func (c *Client) ping() error {
 	c.waiters[tkt] = w
 	c.mu.Unlock()
 
-	disposition, err := c.conn.writeAction(wctx, action, id)
+	disposition, err := c.fr.writeAction(wctx, action, id)
 	if disposition != writeComplete {
 		// A failed write retains ownership until its ticket bookkeeping and
 		// any terminal cause have committed. Otherwise a queued dispatch can
-		// observe the poisoned Conn first and replace the real write cause
-		// with ErrClosed.
+		// observe the poisoned connection first and replace the real write
+		// cause with ErrClosed.
 		defer c.releaseWriter()
 		if disposition != writeOutcomeUnknown {
-			// The Conn disposition, not the error chain, proves this Ping
+			// The write disposition, not the error chain, proves this Ping
 			// never reached the transport. A contradictory response is a
 			// fatal correlation failure.
 			if fatal := c.resolveNotSent(tkt, w, demux.AdmitOptions[Message]{}); fatal != nil {
 				return fatal
 			}
 			if disposition == writeClosed {
-				// Another terminal path closed the Conn and owns the real root
+				// Another terminal path closed the connection and owns the root
 				// cause. Wait for that path to commit instead of racing it with
 				// the generic ErrClosed observed here.
 				<-c.ctx.Done()

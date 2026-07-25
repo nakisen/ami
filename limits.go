@@ -32,7 +32,7 @@ const (
 
 // WireLimits bounds every wire dimension of one connection. Each zero
 // field selects the documented default — zero never means unbounded —
-// and negative fields are rejected by NewConn. Line limits bound a
+// and negative fields are rejected by Dial. Line limits bound a
 // line's content excluding its terminator; byte limits bound raw
 // consumed or produced bytes including terminators.
 //

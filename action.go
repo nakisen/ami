@@ -34,8 +34,8 @@ type Action struct {
 // caller's slice cannot change the action.
 //
 // NewAction validates shape and injection only. Connection-level size
-// limits are enforced by WriteAction against the connection's
-// WireLimits.
+// limits are enforced against the connection's WireLimits when the action
+// is written.
 func NewAction(name string, fields ...Field) (Action, error) {
 	if name == "" {
 		return Action{}, errors.New("ami: invalid action: empty name")

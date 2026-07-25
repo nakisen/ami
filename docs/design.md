@@ -137,24 +137,33 @@ implementation; the key evidence is kept here as rationale anchors.
   Package-level action construction rejects NUL/CR/LF injection,
   malformed keys, and reserved `Action`/`ActionID` fields.
   Client-configured count/byte limits are validated later, before
-  dispatch, and low-level connection limits are validated by
-  `WriteAction`.
+  dispatch, and connection-level size limits are validated by the framing
+  layer as the action is encoded.
 - The parser handles both `Command` output framings: legacy
   `Response: Follows` terminated by `--END COMMAND--`, and the repeated
   `Output:` header form. Both are covered by line, item, and total-output
   limits. Legacy payload lines are normalized into synthesized `Output`
   fields, so both framings present the same message shape downstream.
 
-### Layer 1: `ami.Conn` (public, low level)
+### Layer 1: the framing layer (internal)
 
-`Conn` owns one already-established `net.Conn`, which may be plain TCP or
-TLS: banner read, framing, `ReadMessage`, and `WriteAction`. A successful
-`NewConn` takes ownership of that connection. If constructor validation
-fails, it performs no I/O and leaves ownership with the caller. `Dial`
-owns TCP dialing and the optional TLS handshake before constructing the
-high-level session. `Conn` is synchronous and single-owner so advanced
-users can build a different session layer and tests can target framing
-directly.
+The framing layer owns one already-established `net.Conn`, which may be
+plain TCP or TLS: banner read, framing, message read, and action write. A
+successful construction takes ownership of that connection; if
+constructor validation fails, it performs no I/O and leaves ownership
+with the caller. `Dial` owns TCP dialing and the optional TLS handshake
+before constructing the session on top of it.
+
+The layer is unexported. It was public through v0's development, and the
+stated reason — advanced users building a different session layer — was
+never actually reachable: no constructor accepted a caller-supplied
+connection wrapper, and an alternative session would have had to
+reimplement demultiplexing, correlation, and keepalive anyway. Exporting
+it would freeze the least evolvable part of the surface at the tag for a
+capability nobody has, so the withdrawal happened before v0 (see the
+2026-07-25 entry in [decisions.md](decisions.md)). Re-exporting later
+remains a compatible addition. The layer is synchronous and single-owner,
+which keeps framing directly testable from inside the package.
 
 - A canceled operation that provably consumed no byte of the pending
   inbound frame and wrote no action byte leaves the connection usable and
@@ -164,14 +173,15 @@ directly.
   operation already completed. A partial read surfaces as the transport's
   deadline error, not as a context error. A caller cannot resume a
   partially consumed or emitted AMI frame.
-- A transport write failure poisons and closes the connection. Low-level
-  `WriteAction` returns a sanitized `*WriteError`; `MayHaveExecuted()` and
-  `ErrOutcomeUnknown` distinguish an ambiguous write from a proven
-  zero-byte failure. `Cause()` exposes the transport error but the type
-  deliberately does not unwrap it. A context-like or `*ProtocolError`
-  transport cause therefore cannot impersonate a clean cancellation or
-  pre-wire validation rejection in `errors.Is`/`As`. An operation that
-  finds the connection already closed instead returns `ErrClosed`.
+- A transport write failure poisons and closes the connection. The write
+  reports an explicit byte disposition — complete, locally rejected,
+  cleanly canceled, already closed, provably unsent, or outcome
+  unknown — alongside the transport's own error. The disposition alone
+  establishes whether bytes reached the server: a transport may return a
+  context-like or `*ProtocolError` value after transferring data, so the
+  session classifies outcomes from the disposition and never from the
+  error's identity. An operation that finds the connection already closed
+  reports `ErrClosed` under the already-closed disposition.
 - A protocol or inbound-limit violation closes the connection because
   subsequent framing cannot be trusted.
 - An optional partial-frame age bounds the wall-clock life of one inbound
@@ -182,12 +192,12 @@ directly.
   read loop because only the framing layer sees the first byte; a loop
   polling with a rolling window would either kill an innocent frame that
   straddles a window edge or double the effective bound.
-- `Conn` does not start background goroutines or perform login,
-  correlation, subscriptions, or keepalive.
-- The low-level `WriteAction` accepts a separate caller-owned ActionID
-  string, including empty, so an advanced session can implement its own
-  correlation. The high-level `Client` prohibition on caller-supplied
-  ActionIDs does not apply to this explicit low-level escape hatch.
+- The framing layer does not start background goroutines or perform
+  login, correlation, subscriptions, or keepalive.
+- The action write takes the ActionID as a separate argument, so
+  correlation stays the session's decision rather than the frame's. With
+  the layer unexported, the session is the only caller and always assigns
+  its own opaque ID; there is no path for a consumer-supplied ActionID.
 
 ### Layer 2: `ami.Client` (session)
 
@@ -580,14 +590,10 @@ Sentinel errors support `errors.Is`:
 
 Typed errors support `errors.As`:
 
-- `WriteError`: a low-level transport write failure whose
-  `MayHaveExecuted` result — and match against `ErrOutcomeUnknown` — is
-  false for a proven zero-byte failure and true for an ambiguous write;
-  its explicit `Cause` accessor keeps the transport error out of
-  `errors.Is`/`As` traversal so clean cancellation and pre-wire validation
-  stay unambiguous.
 - `RequestError`: dispatch phase, wrapped cause, ActionID when assigned,
-  and `MayHaveExecuted`.
+  and `MayHaveExecuted`. It is the only error type that reports whether an
+  action may have executed; the framing layer's byte disposition, not an
+  error type, is what establishes that verdict internally.
 - `ResponseError`: stable sanitized `Error()` text plus explicit access to
   the untrusted raw `Response`; it never places the remote `Message` field
   in the error string.
@@ -610,18 +616,26 @@ Typed errors support `errors.As`:
 Malformed input never panics or grows retained memory without bound.
 Library-authored `Error()` text never formats raw AMI fields,
 server-controlled messages, endpoints, certificate names, or an underlying
-OS/network/TLS cause. Typed wrappers normally expose that cause through
-`Unwrap`; `WriteError` deliberately uses only `Cause` to keep transport
-error identities out of `errors.Is`/`As`. Applications must
-classify and redact a potentially topology-bearing cause before logging it.
-Raw responses and events are explicit data that applications must classify
-separately.
+OS/network/TLS cause. Typed wrappers expose that cause through `Unwrap`,
+which is safe because no classification depends on the cause's identity:
+outcome classification comes from the write disposition, and dispatch
+phase from `RequestError.Phase`. Applications must classify and redact a
+potentially topology-bearing cause before logging it. Raw responses and
+events are explicit data that applications must classify separately.
+
+`Dial` reports a login-phase failure as a `DialError` wrapping the
+underlying cause, and a failed login write contributes the transport error
+itself. That path deliberately carries no outcome-unknown verdict: an
+ambiguous `Challenge` or `Login` write leaves nothing to reconcile,
+because the connection is closed and no session was established, while
+`ErrOutcomeUnknown` tells a caller not to retry — the opposite of the
+correct response to a failed dial.
 
 ## Limits and resource accounting
 
 Every limit is explicit and has a documented nonzero safe default; zero
-never silently means unbounded. Connection/client limits are validated at
-`NewConn` or `Dial`, while subscription, follow, and list options are
+never silently means unbounded. Connection and client limits are validated
+at `Dial`, while subscription, follow, and list options are
 validated and copied at their own registration/admission point before any
 retained state or wire I/O is committed. Required dimensions include:
 
@@ -645,8 +659,9 @@ Initial v0 anchors for the core inbound and queue dimensions: banner 1 KiB
 (the pre-authentication read is deliberately the tightest limit), inbound
 line 32 KiB, inbound message 128 KiB, per-subscription queue 512 events /
 2 MiB, client-wide retained subscription bytes 32 MiB. The wire
-dimensions anchored with `Conn` (see the Conn entry in
-[decisions.md](decisions.md)): inbound
+dimensions anchored with the framing layer (see the 2026-07-16 `Conn`
+entry in [decisions.md](decisions.md), written while the layer was still
+exported under that name): inbound
 fields per message 1024, Command output 65536 lines / 8 MiB, outbound
 action fields 128 (`AST_MAX_MANHEADERS`), outbound line 1022 content
 bytes (the server's 1024-byte input window minus CRLF), outbound action
@@ -654,7 +669,7 @@ bytes 128 KiB.
 The remaining session dimensions were ratified on 2026-07-16 (rationale
 in [decisions.md](decisions.md)): writer admission 5 s and write attempt
 5 s (a shorter caller context wins), partial-frame age 30 s enforced by
-`Conn` from the first frame byte, retirement and abandoned-drain
+the framing layer from the first frame byte, retirement and abandoned-drain
 lifetime 60 s, public pending 256, retirement pool 384 (slots reserve at
 admission, so the pool exceeds pending plus concurrent lists or those
 ceilings are unreachable), concurrent lists 16, per-list queue
@@ -781,7 +796,7 @@ repository.
 ## v0 package and repository layout
 
 ```text
-/               root package ami: Conn, Client, immutable messages, errors, limits
+/               root package ami: Client, immutable messages, errors, limits
 /amitest/       scriptable public fake AMI server for consumer tests
 /internal/wire/ parser, encoder, bounded framing, fuzz corpus
 /examples/      runnable generic examples using synthetic identities and data
@@ -904,12 +919,6 @@ Names may still be refined; ownership and lifecycle semantics are the
 contract.
 
 ```go
-func NewConn(conn net.Conn, limits WireLimits) (*Conn, error)
-func (c *Conn) ReadBanner(ctx context.Context) (string, error)
-func (c *Conn) ReadMessage(ctx context.Context) (Message, error)
-func (c *Conn) WriteAction(ctx context.Context, action Action, actionID string) error
-func (c *Conn) Close() error
-
 func (m Message) Get(key string) string
 func (m Message) Lookup(key string) (string, bool)
 func (m Message) Values(key string) []string
@@ -1014,7 +1023,7 @@ enabled defaults.
    supported versions are labeled and retired in the README).
 
 (Resolved 2026-07-16: every session-level default — writer durations,
-partial-frame age and its `Conn` enforcement point, pending/retirement,
+partial-frame age and its framing-layer enforcement point, pending/retirement,
 list, matcher, and subscription dimensions — is now anchored; see
 [decisions.md](decisions.md). Keepalive timings, the core inbound/queue
 anchors, and the wire dimensions were decided earlier.)

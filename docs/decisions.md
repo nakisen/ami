@@ -894,3 +894,57 @@ default limits in one exported value; read committed terminal causes
 without the session lock. The specs slice precedes the `Do` split
 because they share one documentation pass over the same API sketch. The
 rest are independent, and each appends its own section here.
+
+## 2026-07-25 — The framing layer withdraws from the public surface
+
+`Conn`, `NewConn`, `ReadBanner`, `ReadMessage`, `WriteAction`, `Close`,
+and `WriteError` are gone from the public surface, per the ruling above.
+The type is now the unexported `framer` with unexported methods, and
+`Client` holds the only instance a consumer can reach.
+
+The code stays in the root package. Moving it to `internal/` is not
+possible: it produces `ami.Message` and consumes `ami.Action`, so it
+would have to import the root package, which imports it — the same cycle
+that is the reason `internal/wire` speaks only in its own field type and
+never imports the root. Unexporting in place is therefore the whole
+mechanism; there is no package move to look for.
+
+`WireLimits` stays exported, because `Limits.Wire` must remain settable.
+Its documentation now says negative fields are rejected by `Dial`, which
+is where a consumer can now observe the rejection.
+
+Deleting the exported `WriteAction` deleted its error type with it.
+`WriteError` existed to keep a transport error out of the chain, so that a
+transport returning a context-like or `*ProtocolError` value could not
+impersonate a clean cancellation or a pre-wire rejection through
+`errors.Is`. That protection is not lost, because the session never
+depended on it: dispatch and keepalive already called the private write
+and classified outcomes from the byte disposition, exactly as the
+2026-07-17 disposition decision requires, and already passed the raw
+transport error into `RequestError`'s cause. The guarantee lived only on
+the path no session code took. The framing tests that asserted it now
+assert the disposition directly for the same context-like and
+protocol-like causes, which pins the rule at the layer that decides it
+rather than at a wrapper that hid it.
+
+One public behavior narrows as a result. The login exchange used the
+exported `WriteAction`, so an ambiguous write during `Challenge` or
+`Login` produced a `DialError` that matched `ErrOutcomeUnknown`; it no
+longer does, and the login-phase `DialError` wraps the transport error
+itself. This is a correction, not just a simplification. A failed `Dial`
+establishes no session and leaves nothing to reconcile, while
+`ErrOutcomeUnknown` instructs the caller not to retry blindly — advice
+that would argue against redialing, which is precisely the right response
+to a failed dial. Reporting outcome-unknown there gave the flag a meaning
+it cannot carry.
+
+design.md's "Layer 1" section is rewritten as the internal framing layer,
+including why the exported version's stated rationale — advanced users
+building a different session layer — was never reachable, and the write
+bullet now describes the byte disposition instead of `WriteError`. The
+error model drops the `WriteError` entry, states that typed wrappers may
+safely `Unwrap` because no classification depends on a cause's identity,
+and records the login path's deliberate absence of an outcome-unknown
+verdict. The `Conn` rows in the API sketch and the repository layout are
+gone, and the limit anchors now name the framing layer while still
+pointing at the 2026-07-16 log entry written under the old name.

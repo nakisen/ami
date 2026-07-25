@@ -27,7 +27,7 @@ import (
 // new client under its own backoff policy and starts a fresh
 // snapshot/reconciliation generation.
 type Client struct {
-	conn   *Conn
+	fr     *framer
 	banner string
 
 	sess  sessionLimits
@@ -130,14 +130,14 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		}
 		raw = tconn
 	}
-	conn, err := NewConn(raw, cfg.Limits.Wire)
+	fr, err := newFramer(raw, cfg.Limits.Wire)
 	if err != nil {
 		raw.Close()
 		return nil, err
 	}
 
 	c := &Client{
-		conn:       conn,
+		fr:         fr,
 		sess:       sess,
 		ka:         ka,
 		diag:       newDiagnostics(cfg.Logger),
@@ -151,14 +151,14 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		branches:   make(map[demux.BranchID]*branchState),
 	}
 
-	banner, err := conn.ReadBanner(ctx)
+	banner, err := fr.readBanner(ctx)
 	if err != nil {
-		conn.Close()
+		fr.close()
 		return nil, &DialError{Phase: "banner", cause: err}
 	}
 	c.banner = banner
 	if err := c.login(ctx, cfg); err != nil {
-		conn.Close()
+		fr.close()
 		return nil, &DialError{Phase: "login", cause: err}
 	}
 
@@ -192,7 +192,7 @@ func (c *Client) login(ctx context.Context, cfg Config) error {
 	// no copy of the configuration, so scrubbing the connection's reused
 	// encode buffer on every exit path leaves no library-owned copy of
 	// the credential in long-lived memory.
-	defer c.conn.clearWriteBuffer()
+	defer c.fr.clearWriteBuffer()
 	events := cfg.EventMask
 	if events == "" {
 		events = "off"
@@ -258,12 +258,19 @@ func loginSuccess(m Message) bool {
 // strictly matched by ActionID: an event-class reply, a conflicting
 // duplicate envelope, or a foreign or missing ActionID fails the login
 // instead of passing as its response.
+//
+// A failed write returns the framing layer's error, which Dial reports as
+// a login-phase DialError. The write disposition is deliberately not
+// translated into the outcome-unknown taxonomy: an ambiguous Challenge or
+// Login write leaves nothing to reconcile — the connection is closed and
+// no session was established — while ErrOutcomeUnknown instructs the
+// caller not to retry, which is the wrong advice for a failed dial.
 func (c *Client) loginExchange(ctx context.Context, act Action) (Message, error) {
 	id := c.newActionID(demux.KindRequest)
-	if err := c.conn.WriteAction(ctx, act, id); err != nil {
+	if _, err := c.fr.writeAction(ctx, act, id); err != nil {
 		return Message{}, err
 	}
-	msg, err := c.conn.ReadMessage(ctx)
+	msg, err := c.fr.readMessage(ctx)
 	if err != nil {
 		return Message{}, err
 	}
@@ -362,7 +369,7 @@ func (c *Client) finishTeardown() {
 	cause := c.cause
 	c.mu.Unlock()
 	c.cancel(cause)
-	c.conn.Close()
+	c.fr.close()
 }
 
 // applyLockedFx applies one machine call's effects under the session
@@ -518,7 +525,7 @@ func (c *Client) readLoop() {
 		}
 	}()
 	for {
-		msg, err := c.conn.ReadMessage(c.ctx)
+		msg, err := c.fr.readMessage(c.ctx)
 		if err != nil {
 			if c.ctx.Err() != nil {
 				return

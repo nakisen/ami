@@ -4,10 +4,11 @@
 // dependencies outside the Go standard library.
 //
 // A Message is an immutable, ordered field sequence: duplicate keys are
-// legal AMI and their wire order is preserved. Conn frames messages over
-// one established network connection under explicit WireLimits, with
-// every blocking operation bounded by a context. Higher-level session
-// features build on these primitives.
+// legal AMI and their wire order is preserved. Dial establishes a Client:
+// one authenticated session over one connection, framing messages under
+// explicit WireLimits with every blocking operation bounded by a context.
+// Correlation, explicit subscriptions, list state, and keepalive build on
+// that session; the framing layer beneath it is internal.
 //
 // The library supports AMI protocol versions 2.0.0 and newer
 // (Asterisk 12+).

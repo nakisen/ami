@@ -23,7 +23,8 @@ The machine owns every decision between "a parsed message arrived" and
 - terminal-result commits — exactly one per branch — and the wake set
   the session must signal after each call.
 
-It deliberately excludes: I/O and parsing (`Conn` and `internal/wire`),
+It deliberately excludes: I/O and parsing (the framing layer and
+`internal/wire`),
 blocking and goroutine management (session), ActionID generation (the
 session generates; the machine only consumes the parsed identity),
 clocks and timers (callers supply a logical timestamp; the session arms

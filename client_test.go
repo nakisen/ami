@@ -530,7 +530,7 @@ func TestEventMaskDefaultIsOffAndBannerRetained(t *testing.T) {
 // zeroed to its full capacity.
 func TestLoginScrubsSecretFromWriteBuffer(t *testing.T) {
 	c, _ := dialTest(t, nil)
-	buf := c.conn.wbuf[:cap(c.conn.wbuf)]
+	buf := c.fr.wbuf[:cap(c.fr.wbuf)]
 	if bytes.Contains(buf, []byte("synthetic-secret")) {
 		t.Fatal("the login secret survives in the connection's write buffer")
 	}

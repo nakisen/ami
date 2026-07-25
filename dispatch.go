@@ -258,7 +258,7 @@ func (c *Client) dispatch(ctx context.Context, action Action, id string, kind de
 // only after this return.
 func (c *Client) writeAdmitted(ctx context.Context, action Action, id string, tkt demux.Ticket, w chan demux.Completion[Message], admit demux.AdmitOptions[Message]) error {
 	wctx, cancel := context.WithTimeout(ctx, c.sess.writeAttempt)
-	disposition, err := c.conn.writeAction(wctx, action, id)
+	disposition, err := c.fr.writeAction(wctx, action, id)
 	cancel()
 	defer c.releaseWriter()
 	if disposition == writeComplete {
@@ -269,7 +269,7 @@ func (c *Client) writeAdmitted(ctx context.Context, action Action, id string, tk
 	}
 
 	if disposition != writeOutcomeUnknown {
-		// Only the Conn's private disposition establishes that no byte
+		// Only the framer's private disposition establishes that no byte
 		// reached the transport. Error identity is deliberately ignored:
 		// a custom transport can return any error after transferring data.
 		cause := err

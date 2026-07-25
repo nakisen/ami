@@ -221,7 +221,7 @@ type sessionLimits struct {
 
 // resolve applies defaults to zero fields, rejects negative fields, and
 // returns the effective session limits. Wire limits resolve separately
-// at NewConn.
+// when the connection's framing layer is constructed.
 func (l Limits) resolve() (sessionLimits, error) {
 	s := sessionLimits{
 		writeAdmission: defaultWriteAdmission,

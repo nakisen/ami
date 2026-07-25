@@ -187,12 +187,12 @@ func TestPingClosedConnDefersToTerminalOwner(t *testing.T) {
 		c, _ := dialTest(t, nil)
 
 		// Model the interval after another terminal path has marked the
-		// Conn closed but before it commits the session's real root cause.
-		// Keeping the underlying pipe open holds the reader out of this
-		// deliberately controlled ownership handoff.
-		c.conn.mu.Lock()
-		c.conn.closed = true
-		c.conn.mu.Unlock()
+		// connection closed but before it commits the session's real root
+		// cause. Keeping the underlying pipe open holds the reader out of
+		// this deliberately controlled ownership handoff.
+		c.fr.mu.Lock()
+		c.fr.closed = true
+		c.fr.mu.Unlock()
 
 		result := make(chan error, 1)
 		go func() { result <- c.ping() }()
