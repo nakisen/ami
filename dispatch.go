@@ -16,6 +16,12 @@ import (
 // context.
 var errWriteAdmission = errors.New("ami: write admission timed out")
 
+// errMatcherLimit is the one public rejection for every declaration
+// bounded by Limits.MaxMatcherNames and MaxMatcherBytes: subscription
+// matchers, follow selections, completion sets, and a list's declared
+// count fields.
+var errMatcherLimit = errors.New("ami: declared name set exceeds the matcher limits")
+
 // A FollowSpec requests an ActionID-correlated follow subscription
 // registered atomically with a DoFollow dispatch, before the first
 // action byte is written. The client supplies the ActionID; the spec
@@ -128,19 +134,13 @@ type ListSpec struct {
 	// expected item count, checked in order; the first present field is
 	// verified against the observed items, and a present-but-unusable
 	// value fails the list with a malformed-count *ListError instead of
-	// silently skipping the declared check. The declaration is bounded —
-	// at most 16 names totaling at most 1 KiB, validated before
-	// dispatch — because the extractor runs on the read loop. Empty
-	// declares no count.
+	// silently skipping the declared check. The declaration is scanned on
+	// the read loop, so it is bounded by Limits.MaxMatcherNames and
+	// Limits.MaxMatcherBytes — the same bounds that govern matcher and
+	// completion names — and validated before dispatch. Empty declares no
+	// count.
 	CountFields []string
 }
-
-// ListSpec.CountFields bounds: the extractor scans these names against
-// every completion event on the read loop.
-const (
-	maxCountFields    = 16
-	maxCountFieldSize = 1 << 10
-)
 
 // StartList dispatches one list action. ctx governs admission, the
 // action write, and the initial response only: on initial success,
@@ -151,15 +151,21 @@ const (
 // every non-nil error no handle escapes; the client owns any required
 // bounded drain.
 func (c *Client) StartList(ctx context.Context, action Action, spec ListSpec) (*List, error) {
-	if len(spec.CountFields) > maxCountFields {
-		return nil, errors.New("ami: ListSpec.CountFields exceeds 16 names")
+	// The count declaration is scanned on the read loop against every
+	// completion event, which is the same reason matcher and completion
+	// names are bounded, so it answers to the same configured limits. The
+	// machine enforces them for the name sets it folds; this declaration
+	// never reaches the machine, so the check lives here and reports the
+	// identical public rejection.
+	if len(spec.CountFields) > c.sess.machine.MaxMatcherNames {
+		return nil, errMatcherLimit
 	}
 	total := 0
 	for _, f := range spec.CountFields {
 		total += len(f)
 	}
-	if total > maxCountFieldSize {
-		return nil, errors.New("ami: ListSpec.CountFields exceeds 1 KiB of names")
+	if total > c.sess.machine.MaxMatcherBytes {
+		return nil, errMatcherLimit
 	}
 	admit := demux.AdmitOptions[Message]{List: &demux.ListOptions[Message]{
 		Completions:   spec.CompletionEvents,
@@ -421,7 +427,7 @@ func (c *Client) admitError(err error, id string) error {
 	case errors.Is(err, demux.ErrListLimit):
 		return &RequestError{Phase: PhaseAdmission, ActionID: id, cause: errors.New("ami: list limit reached")}
 	case errors.Is(err, demux.ErrMatcherLimit):
-		return errors.New("ami: declared name set exceeds the matcher limits")
+		return errMatcherLimit
 	}
 	return errors.New("ami: invalid dispatch options")
 }

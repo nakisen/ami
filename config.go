@@ -204,6 +204,52 @@ type Limits struct {
 	MaxListBytes int
 }
 
+// defaultLimits is the one place the documented defaults are assembled.
+// Both DefaultLimits and resolve read it, so an exported default cannot
+// drift from the resolved one.
+var defaultLimits = Limits{
+	Wire: WireLimits{
+		MaxBannerBytes:        defaultMaxBannerBytes,
+		MaxLineBytes:          defaultMaxLineBytes,
+		MaxFields:             defaultMaxFields,
+		MaxMessageBytes:       defaultMaxMessageBytes,
+		MaxCommandOutputLines: defaultMaxCommandOutputLines,
+		MaxCommandOutputBytes: defaultMaxCommandOutputBytes,
+		MaxActionFields:       defaultMaxActionFields,
+		MaxActionLineBytes:    defaultMaxActionLineBytes,
+		MaxActionBytes:        defaultMaxActionBytes,
+		MaxPartialFrameAge:    defaultMaxPartialFrameAge,
+	},
+	WriteAdmission:         defaultWriteAdmission,
+	WriteAttempt:           defaultWriteAttempt,
+	MaxPending:             defaultMaxPending,
+	MaxRetirement:          defaultMaxRetirement,
+	RetirementLifetime:     defaultRetirementLifetime,
+	MaxSubscriptions:       defaultMaxSubscriptions,
+	SubscriptionQueueItems: defaultSubscriptionQueueItems,
+	SubscriptionQueueBytes: defaultSubscriptionQueueBytes,
+	MaxSubscriptionBytes:   defaultMaxSubscriptionBytes,
+	MaxMatcherNames:        defaultMaxMatcherNames,
+	MaxMatcherBytes:        defaultMaxMatcherBytes,
+	MaxLists:               defaultMaxLists,
+	ListQueueItems:         defaultListQueueItems,
+	ListQueueBytes:         defaultListQueueBytes,
+	ListObservedBytes:      defaultListObservedBytes,
+	MaxListBytes:           defaultMaxListBytes,
+}
+
+// DefaultLimits returns the fully populated default limits: exactly what
+// a zero Limits resolves to. Start from it to tune one dimension while
+// every other value stays visible in code, rather than reading the
+// documented defaults out of godoc.
+//
+// A zero field still selects its default, so Limits{} and DefaultLimits()
+// configure the same client. The returned value is a copy; mutating it
+// affects nothing.
+func DefaultLimits() Limits {
+	return defaultLimits
+}
+
 // sessionLimits is the resolved form of Limits.
 type sessionLimits struct {
 	writeAdmission time.Duration
@@ -223,24 +269,25 @@ type sessionLimits struct {
 // returns the effective session limits. Wire limits resolve separately
 // when the connection's framing layer is constructed.
 func (l Limits) resolve() (sessionLimits, error) {
+	d := defaultLimits
 	s := sessionLimits{
-		writeAdmission: defaultWriteAdmission,
-		writeAttempt:   defaultWriteAttempt,
-		subItems:       defaultSubscriptionQueueItems,
-		subBytes:       defaultSubscriptionQueueBytes,
-		listItems:      defaultListQueueItems,
-		listBytes:      defaultListQueueBytes,
-		listObserved:   defaultListObservedBytes,
+		writeAdmission: d.WriteAdmission,
+		writeAttempt:   d.WriteAttempt,
+		subItems:       d.SubscriptionQueueItems,
+		subBytes:       d.SubscriptionQueueBytes,
+		listItems:      d.ListQueueItems,
+		listBytes:      d.ListQueueBytes,
+		listObserved:   d.ListObservedBytes,
 		machine: demux.Limits{
-			MaxPending:           defaultMaxPending,
-			MaxSubscriptions:     defaultMaxSubscriptions,
-			MaxSubscriptionBytes: defaultMaxSubscriptionBytes,
-			MaxLists:             defaultMaxLists,
-			MaxListBytes:         defaultMaxListBytes,
-			MaxMatcherNames:      defaultMaxMatcherNames,
-			MaxMatcherBytes:      defaultMaxMatcherBytes,
-			MaxRetirement:        defaultMaxRetirement,
-			RetirementLifetime:   int64(defaultRetirementLifetime),
+			MaxPending:           d.MaxPending,
+			MaxSubscriptions:     d.MaxSubscriptions,
+			MaxSubscriptionBytes: d.MaxSubscriptionBytes,
+			MaxLists:             d.MaxLists,
+			MaxListBytes:         d.MaxListBytes,
+			MaxMatcherNames:      d.MaxMatcherNames,
+			MaxMatcherBytes:      d.MaxMatcherBytes,
+			MaxRetirement:        d.MaxRetirement,
+			RetirementLifetime:   int64(d.RetirementLifetime),
 		},
 	}
 	for _, d := range []struct {

@@ -84,7 +84,7 @@ func subscribeError(err error) error {
 	case errors.Is(err, demux.ErrSubscriptionLimit):
 		return errors.New("ami: subscription limit reached")
 	case errors.Is(err, demux.ErrMatcherLimit):
-		return errors.New("ami: declared name set exceeds the matcher limits")
+		return errMatcherLimit
 	}
 	return errors.New("ami: invalid subscription options")
 }

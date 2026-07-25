@@ -1099,3 +1099,36 @@ second result already answers that question. Field keys also keep the
 standard library's case-insensitive comparison, because key matching is
 `Get`/`Lookup`/`Values` behavior rather than protocol identity, and
 narrowing it would be a separate decision with no evidence behind it.
+
+## 2026-07-25 — One exported value for the defaults, one policy for the read loop
+
+`DefaultLimits()` returns the fully populated default limits, and
+`ListSpec.CountFields` now answers to the configured matcher limits.
+
+Twenty-six tunable fields across `Limits` and `WireLimits` had their
+defaults visible only in godoc and in unexported constants, so tuning one
+dimension meant reading prose to learn what the others were. The zero-value
+contract is untouched — breaking it would break `Config{}` — and
+`DefaultLimits()` only adds discoverability. What makes it trustworthy is
+that both it and resolution now read one internal `Limits` value, and a
+test asserts `Limits{}.resolve()` equals `DefaultLimits().resolve()` for
+the session and wire limits alike, so the exported value cannot drift from
+what the library applies.
+
+The count-field bounds were two hardcoded constants, 16 names and 1 KiB,
+governing a declaration scanned on the read loop against every completion
+event — the same reason matcher and completion names are bounded, but under
+a tighter and unrelated policy that no configuration could reach. They now
+use `MaxMatcherNames` and `MaxMatcherBytes`, whose defaults of 64 names and
+4096 bytes are looser and consistent with the ceiling-not-allocation
+policy. Adding `MaxCountFields`/`MaxCountFieldBytes` was rejected: it would
+manage one constraint under two names and push the tunable count to
+twenty-eight, spending the consistency the change buys.
+
+The rejection is now literally one error. `errMatcherLimit` replaces three
+copies of the same string across subscription registration, dispatch
+admission, and the list count check, so every declaration the read loop
+scans fails the same way. The bounds test moves to a client configured
+with tiny matcher limits and checks both edges: over by one is rejected on
+either dimension, and exactly at both bounds is accepted, which the old
+constants-based test could not express.

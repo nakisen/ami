@@ -99,16 +99,17 @@ type WireLimits struct {
 // resolve applies defaults to zero fields, rejects negative fields, and
 // returns the effective wire limits and partial-frame age.
 func (l WireLimits) resolve() (wire.Limits, time.Duration, error) {
+	d := defaultLimits.Wire
 	w := wire.Limits{
-		MaxBannerBytes:        defaultMaxBannerBytes,
-		MaxLineBytes:          defaultMaxLineBytes,
-		MaxFields:             defaultMaxFields,
-		MaxMessageBytes:       defaultMaxMessageBytes,
-		MaxCommandOutputLines: defaultMaxCommandOutputLines,
-		MaxCommandOutputBytes: defaultMaxCommandOutputBytes,
-		MaxActionFields:       defaultMaxActionFields,
-		MaxActionLineBytes:    defaultMaxActionLineBytes,
-		MaxActionBytes:        defaultMaxActionBytes,
+		MaxBannerBytes:        d.MaxBannerBytes,
+		MaxLineBytes:          d.MaxLineBytes,
+		MaxFields:             d.MaxFields,
+		MaxMessageBytes:       d.MaxMessageBytes,
+		MaxCommandOutputLines: d.MaxCommandOutputLines,
+		MaxCommandOutputBytes: d.MaxCommandOutputBytes,
+		MaxActionFields:       d.MaxActionFields,
+		MaxActionLineBytes:    d.MaxActionLineBytes,
+		MaxActionBytes:        d.MaxActionBytes,
 	}
 	for _, d := range []struct {
 		name string
@@ -132,7 +133,7 @@ func (l WireLimits) resolve() (wire.Limits, time.Duration, error) {
 			*d.dst = d.set
 		}
 	}
-	age := defaultMaxPartialFrameAge
+	age := d.MaxPartialFrameAge
 	if l.MaxPartialFrameAge < 0 {
 		return wire.Limits{}, 0, fmt.Errorf("ami: WireLimits.MaxPartialFrameAge is negative")
 	}

@@ -661,19 +661,87 @@ func TestStartListMalformedCount(t *testing.T) {
 	mustDo(t, c, s, "Ping") // the failure stays scoped to the list
 }
 
+// TestStartListCountFieldsBounds pins the count declaration to the
+// configured matcher limits — the same bounds the machine enforces for
+// the name sets it folds — at their exact edges, and requires the
+// rejection to be the one public matcher-limit error.
 func TestStartListCountFieldsBounds(t *testing.T) {
-	c, _ := dialTest(t, nil)
+	const names, bytes = 4, 12
+	c, s := dialTest(t, func(cfg *Config) {
+		cfg.Limits.MaxMatcherNames = names
+		cfg.Limits.MaxMatcherBytes = bytes
+	})
 	act, _ := NewAction("QueueStatus")
-	many := make([]string, maxCountFields+1)
+
+	many := make([]string, names+1)
 	for i := range many {
 		many[i] = "F"
 	}
-	if _, err := c.StartList(context.Background(), act, ListSpec{CountFields: many}); err == nil {
-		t.Fatal("StartList accepted a CountFields declaration over the name bound")
+	if _, err := c.StartList(context.Background(), act, ListSpec{CountFields: many}); !errors.Is(err, errMatcherLimit) {
+		t.Fatalf("StartList over the name bound = %v, want the matcher-limit rejection", err)
 	}
-	long := []string{strings.Repeat("x", maxCountFieldSize+1)}
-	if _, err := c.StartList(context.Background(), act, ListSpec{CountFields: long}); err == nil {
-		t.Fatal("StartList accepted a CountFields declaration over the byte bound")
+	long := []string{strings.Repeat("x", bytes+1)}
+	if _, err := c.StartList(context.Background(), act, ListSpec{CountFields: long}); !errors.Is(err, errMatcherLimit) {
+		t.Fatalf("StartList over the byte bound = %v, want the matcher-limit rejection", err)
+	}
+
+	// Exactly at both bounds the declaration is accepted, so the limits
+	// are ceilings rather than off-by-one rejections.
+	atLimit := []string{"aaa", "bbb", "ccc", "ddd"} // 4 names, 12 bytes
+	done := make(chan error, 1)
+	go func() {
+		list, err := c.StartList(context.Background(), act, ListSpec{CountFields: atLimit})
+		if list != nil {
+			defer list.Close()
+		}
+		done <- err
+	}()
+	got := s.readAction()
+	s.respond(got.id, "Success", "EventList", "start")
+	if err := <-done; err != nil {
+		t.Fatalf("StartList at the exact bounds = %v, want acceptance", err)
+	}
+}
+
+// TestDefaultLimitsMatchesZero pins the single source of the defaults: a
+// zero Limits and a fully populated DefaultLimits must resolve to the
+// same session limits, so the exported value can never drift from what
+// the library actually applies.
+func TestDefaultLimitsMatchesZero(t *testing.T) {
+	zero, err := Limits{}.resolve()
+	if err != nil {
+		t.Fatalf("Limits{}.resolve() error = %v", err)
+	}
+	explicit, err := DefaultLimits().resolve()
+	if err != nil {
+		t.Fatalf("DefaultLimits().resolve() error = %v", err)
+	}
+	if zero != explicit {
+		t.Fatalf("DefaultLimits() resolves to %+v, want the zero value's %+v", explicit, zero)
+	}
+
+	zw, zage, err := WireLimits{}.resolve()
+	if err != nil {
+		t.Fatalf("WireLimits{}.resolve() error = %v", err)
+	}
+	ew, eage, err := DefaultLimits().Wire.resolve()
+	if err != nil {
+		t.Fatalf("DefaultLimits().Wire.resolve() error = %v", err)
+	}
+	if zw != ew || zage != eage {
+		t.Fatalf("DefaultLimits().Wire resolves to (%+v, %v), want (%+v, %v)", ew, eage, zw, zage)
+	}
+
+	// Every field is populated: a caller can read any default from the
+	// value instead of from godoc.
+	if DefaultLimits().MaxPending == 0 || DefaultLimits().Wire.MaxBannerBytes == 0 {
+		t.Fatal("DefaultLimits() left fields at zero")
+	}
+	// The returned value is a copy.
+	d := DefaultLimits()
+	d.MaxPending = 1
+	if DefaultLimits().MaxPending == 1 {
+		t.Fatal("mutating the returned Limits changed the package default")
 	}
 }
 

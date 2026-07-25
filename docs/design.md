@@ -673,7 +673,11 @@ correct response to a failed dial.
 ## Limits and resource accounting
 
 Every limit is explicit and has a documented nonzero safe default; zero
-never silently means unbounded. Connection and client limits are validated
+never silently means unbounded. `DefaultLimits()` returns the fully
+populated defaults — exactly what a zero `Limits` resolves to — so a
+caller tuning one dimension can see every other value in code instead of
+reading godoc; a single internal value feeds both it and resolution, so
+the two cannot drift. Connection and client limits are validated
 at `Dial`, while subscription, follow, and list options are
 validated and copied at their own registration/admission point before any
 retained state or wire I/O is committed. Required dimensions include:
@@ -692,6 +696,10 @@ retained state or wire I/O is committed. Required dimensions include:
   and client-wide queued subscription bytes;
 - reserved outcome-unknown retirement and abandoned-list drain
   count/lifetime;
+- one bound for every declaration the read loop scans: matcher names,
+  follow selections, completion sets, and a list's declared count fields
+  all answer to `MaxMatcherNames`/`MaxMatcherBytes` and are rejected with
+  one stable error, rather than each carrying its own policy;
 - keepalive interval, write-attempt deadline, and response timeout.
 
 Initial v0 anchors for the core inbound and queue dimensions: banner 1 KiB
@@ -970,6 +978,7 @@ func (e Event) Name() string
 func (e Event) Is(name string) bool
 
 func Dial(ctx context.Context, cfg Config) (*Client, error)
+func DefaultLimits() Limits
 
 type AuthMethod uint8
 
