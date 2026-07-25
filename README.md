@@ -34,7 +34,9 @@ evidence. The short version of what this library does differently:
   library never retries an action.
 - **List completion that doesn't hang.** `ListSpec` combines declared
   completion event names with the generic `EventList: Complete` header
-  convention instead of guessing by substring.
+  convention instead of guessing by substring, and `ListSpecFor` ships the
+  contracts of known list actions — verified against Asterisk sources — so
+  you don't restate them.
 - **Testing as a feature.** `amitest` ships a public, programmatic fake
   AMI server so consumers can test without a PBX, and `NewEvent`/
   `NewResponse` build message values directly, so a pure event-folding

@@ -457,6 +457,16 @@ function that would run on the read loop.
 - `StartList`'s context governs admission, action write, and the initial
   response only. Before a successful response, all list state remains
   library-owned.
+- `ListSpecFor(action)` returns the completion contract of a known list
+  action, so consumers do not restate protocol facts the library already
+  verified. It is data, not `amix`: hand-written entries with source notes,
+  no typed decoding, no generated code, no Asterisk XML input, so the
+  provenance and licensing questions that defer `amix` do not apply. An
+  entry is added only when verified against Asterisk sources with the
+  version range it holds for; the table may be incomplete, but it may not
+  be wrong, and reporting an action as unknown is part of the contract.
+  That also makes later entries a compatible addition, since callers
+  already handle unknown actions by declaring their own `ListSpec`.
 - The list state is registered before writing and tolerates
   item/completion arrival before the initial response. Completion names
   and the `EventList` header are matched under ASCII case folding, as
@@ -840,6 +850,14 @@ No normal build or test may download schema input. Accepted source
 material and generator output must be pinned and reviewable in the
 repository.
 
+`ListSpecFor`'s table is not a step toward `amix` and inherits none of the
+questions above: it is a hand-written list of protocol facts with source
+notes, carrying no typed decoding, no generated code, and no Asterisk XML
+input. The last question is the one it does share, and it answers it
+explicitly — a known action may still be absent, renamed, or
+permission-gated on any given server, so the table is documentation of the
+protocol, never a capability claim.
+
 ## v0 package and repository layout
 
 ```text
@@ -1037,6 +1055,7 @@ type ListSpec struct {
     CountFields      []string // optional alternatives, checked in order
 }
 
+func ListSpecFor(action string) (ListSpec, bool)
 func (c *Client) StartList(ctx context.Context, action Action, spec ListSpec) (*List, error)
 func (l *List) Response() Response
 func (l *List) Next(ctx context.Context) (Event, error)

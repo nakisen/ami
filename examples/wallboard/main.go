@@ -125,10 +125,19 @@ func snapshot(ctx context.Context, client *ami.Client) (*board, error) {
 	if err != nil {
 		return nil, err
 	}
-	list, err := client.StartList(ctx, action, ami.ListSpec{
-		CompletionEvents: []string{"QueueStatusComplete"},
-		CountFields:      []string{"ListItems"},
-	})
+	// The completion contract for a known list action comes from the
+	// library's verified table instead of being restated here. For an
+	// action the table does not know, declare it — this is the same value:
+	//
+	//	ami.ListSpec{
+	//		CompletionEvents: []string{"QueueStatusComplete"},
+	//		CountFields:      []string{"ListItems"},
+	//	}
+	spec, ok := ami.ListSpecFor("QueueStatus")
+	if !ok {
+		return nil, errors.New("no known list contract for QueueStatus")
+	}
+	list, err := client.StartList(ctx, action, spec)
 	if err != nil {
 		return nil, err
 	}

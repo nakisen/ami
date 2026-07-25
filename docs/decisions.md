@@ -1132,3 +1132,62 @@ scans fails the same way. The bounds test moves to a client configured
 with tiny matcher limits and checks both edges: over by one is rejected on
 either dimension, and exactly at both bounds is accepted, which the old
 constants-based test could not express.
+
+## 2026-07-25 — The known list contracts ship as verified data
+
+`ListSpecFor(action)` returns the completion contract of a known list
+action. Three entries ship: `QueueStatus`, `Status`, and `SIPpeers`.
+
+`ListSpec` exists because heuristic completion detection is a documented
+dead end in prior art. The library then made every consumer restate the
+same protocol facts by hand, so a consumer who does not know that
+`QueueStatus` ends with `QueueStatusComplete` falls into exactly the
+failure `ListSpec` was built to prevent — only now in application space,
+where the library cannot help.
+
+Every entry was verified against Asterisk sources during this slice rather
+than asserted from memory, and each carries its source note in
+`listspecs.go`:
+
+- `QueueStatus` → `QueueStatusComplete`: `apps/app_queue.c`,
+  `manager_queues_status`, terminated with
+  `astman_send_list_complete_start(s, m, "QueueStatusComplete", q_items)`.
+- `Status` → `StatusComplete` with count fields `ListItems` and `Items`:
+  `main/manager.c`, `action_status`, which calls the shared list-complete
+  helper and then appends an explicit `Items: <channels>` line. This is
+  the pairing that motivated `CountFields` alternatives in the first place,
+  now confirmed at the source instead of quoted from the survey.
+- `SIPpeers` → `PeerlistComplete`: `channels/chan_sip.c`,
+  `manager_sip_show_peers`, on branch 20; `chan_sip.c` is absent from
+  branch 21 onward, which pins the action's range. Its completion name
+  does not follow its action name, which is the standing evidence that
+  this table cannot be replaced by a naming rule.
+
+The count field is `ListItems` throughout because the shared helper
+`astman_send_list_complete_start_common` in `main/manager.c` emits
+`EventList: Complete` and `ListItems: <count>` for every action that
+terminates through it. That is one fact behind three entries, and it also
+explains why the hybrid header convention already covers these actions
+even with no declared name.
+
+The verification turned out much cheaper than the plan assumed: the shared
+helper makes one grep per module sufficient. The remaining fifteen
+candidates therefore stay in the queue by scope discipline, not by cost,
+and can land together in a follow-up slice.
+
+Two properties are pinned by tests because the table is package-level
+data. The returned spec is a fresh copy, so a caller mutating it cannot
+corrupt every later lookup. And every entry must fit the default matcher
+bounds, or the table would ship a contract that `StartList` rejects out of
+the box. Two entries also run end to end through a real piped session,
+including `Status` with its count arriving under the second alternative,
+so the shipped contracts are exercised by the machinery a consumer uses
+rather than only compared as data.
+
+`examples/wallboard` now takes its contract from the table and keeps the
+hand-written form in a comment, so the path for an unknown action stays
+visible. The table is documentation of the protocol, not a capability
+claim: a known action may still be absent, renamed, or permission-gated on
+a given server, and design.md's `amix` section records that this table
+inherits none of `amix`'s provenance questions, since it contains no
+generated code and no Asterisk XML input.
