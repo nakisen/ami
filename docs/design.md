@@ -388,6 +388,16 @@ aggregate limits, registers eagerly, and returns
   aggregate charge without replacing nil `Err`. `Done` closes on the first
   terminal result; `Err` is stable and meaningful after `Done` and returns
   nil while active.
+- `Client.Err`, `Subscription.Err`, and `List.Err` read without taking the
+  session lock. A terminal result is committed under the lock and published
+  atomically in the same critical section, before `Done` closes, so an
+  unlocked read observes either nothing yet or the committed first winner,
+  and a consumer that has observed `Done` observes the result. This matters
+  because the session lock is the read loop's own: an application polling
+  `Err` would otherwise contend with routing, whose unmatched path is the
+  cheapest and most frequent operation in the machine. `List.Completion`
+  still takes the lock — a stored completion event is machine state, not a
+  committed-once value.
 - Client death and lag discard queued events so applications fence stale
   generations promptly. A clean terminal follow preserves its already
   queued events and yields `io.EOF` only after they drain.

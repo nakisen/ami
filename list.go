@@ -120,10 +120,12 @@ func (l *List) Done() <-chan struct{} {
 // after clean completion, a *ListError for cancellation, overflow, a
 // count mismatch, or a malformed declared count, ErrClosed after local
 // Close, or the client root cause.
+//
+// The read takes no lock, on the same terms as Subscription.Err. Note
+// that Completion does take it: a stored completion event is machine
+// state rather than a committed-once value.
 func (l *List) Err() error {
-	l.c.mu.Lock()
-	defer l.c.mu.Unlock()
-	return l.b.err
+	return l.b.terminalErr()
 }
 
 // Close releases the list locally: immediate, idempotent, and local.

@@ -69,6 +69,13 @@ type Client struct {
 	branches   map[demux.BranchID]*branchState
 	terminated bool
 	cause      error
+
+	// committedCause publishes cause for lock-free reads. It is written
+	// once, under the session lock, in the same critical section that
+	// commits termination, and a nil pointer means the client is still
+	// running. Err reads it without the lock so a polling application
+	// cannot contend with the read loop.
+	committedCause atomic.Pointer[error]
 }
 
 // branchState is the session-side state of one consumer-facing branch,
@@ -81,6 +88,22 @@ type branchState struct {
 	// Guarded by the client's session lock.
 	terminal bool
 	err      error
+
+	// committedErr publishes err for lock-free reads, written once in the
+	// same locked critical section that commits the terminal result. A nil
+	// pointer covers both a running branch and a clean terminal, which
+	// Err reports identically as nil.
+	committedErr atomic.Pointer[error]
+}
+
+// terminalErr returns the branch's committed terminal error without
+// taking the session lock: nil while the branch is active and after a
+// clean terminal, otherwise the first-winner error.
+func (b *branchState) terminalErr() error {
+	if p := b.committedErr.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // Dial connects, performs the optional TLS handshake, reads the
@@ -318,11 +341,14 @@ func (c *Client) Done() <-chan struct{} {
 
 // Err returns the client's stable root cause once terminal, and nil
 // while the client is running. It is guaranteed stable after Done.
+//
+// The read takes no lock. The cause is committed under the session lock
+// and published atomically in the same critical section, so an
+// application polling Err never contends with the read loop, and any
+// observed cause is the committed first winner.
 func (c *Client) Err() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.terminated {
-		return c.cause
+	if p := c.committedCause.Load(); p != nil {
+		return *p
 	}
 	return nil
 }
@@ -343,8 +369,7 @@ func (c *Client) Close() error {
 func (c *Client) die(cause error) {
 	c.mu.Lock()
 	if !c.terminated {
-		c.terminated = true
-		c.cause = cause
+		c.commitCauseLocked(cause)
 		var fx demux.Effects[Message]
 		func() {
 			// A machine wrecked by a mid-mutation panic must not take
@@ -359,6 +384,17 @@ func (c *Client) die(cause error) {
 	}
 	c.mu.Unlock()
 	c.finishTeardown()
+}
+
+// commitCauseLocked commits the client's first terminal cause. The caller
+// holds the session lock and has checked that no cause has won yet. The
+// atomic publication happens in the same critical section as the plain
+// field, so a lock-free Err can never observe termination without its
+// cause, or a cause that a later winner replaces.
+func (c *Client) commitCauseLocked(cause error) {
+	c.terminated = true
+	c.cause = cause
+	c.committedCause.Store(&cause)
 }
 
 // finishTeardown cancels the session context with the committed cause
@@ -379,8 +415,7 @@ func (c *Client) finishTeardown() {
 // teardown after releasing the lock.
 func (c *Client) applyLockedFx(fx demux.Effects[Message]) {
 	if fx.Fatal != nil && !c.terminated {
-		c.terminated = true
-		c.cause = c.fatalError(fx.Fatal)
+		c.commitCauseLocked(c.fatalError(fx.Fatal))
 		c.diag.info("client terminated", "cause", diagErrClass(c.cause))
 	}
 	c.deliverLocked(fx)
@@ -453,8 +488,17 @@ func (c *Client) commitTerminalLocked(b *branchState, reason demux.Reason) {
 	if b.terminal {
 		return
 	}
+	err := c.errForReasonLocked(reason)
 	b.terminal = true
-	b.err = c.errForReasonLocked(reason)
+	b.err = err
+	if err != nil {
+		// Published for lock-free reads in the same critical section that
+		// commits it, and before Done closes, so a consumer that observes
+		// Done observes this value. The pointer targets this local copy
+		// rather than the mutable field, and a clean terminal leaves it
+		// nil — which Err already reports as nil.
+		b.committedErr.Store(&err)
+	}
 	close(b.done)
 	// Terminal paths outside routing — a local Close, the death sweep —
 	// carry no machine Wake effect, so the commit itself must unpark a

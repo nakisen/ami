@@ -188,10 +188,11 @@ func (s *Subscription) Done() <-chan struct{} {
 // Err returns the subscription's stable terminal error: nil while
 // active and after a clean terminal, ErrLagged after overflow,
 // ErrClosed after local Close, or the client root cause.
+//
+// The read takes no lock: the terminal result is published atomically in
+// the same critical section that commits it, before Done closes.
 func (s *Subscription) Err() error {
-	s.c.mu.Lock()
-	defer s.c.mu.Unlock()
-	return s.b.err
+	return s.b.terminalErr()
 }
 
 // Close unregisters the subscription: immediate, idempotent, and

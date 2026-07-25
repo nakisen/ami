@@ -1235,3 +1235,42 @@ did.
 
 `DiagDrops` reads the diagnostics queue's atomic drop counter and is zero
 when no `Logger` is configured, because the silent default queues nothing.
+
+## 2026-07-25 — Committed terminal causes read without the session lock
+
+`Client.Err`, `Subscription.Err`, and `List.Err` no longer take the session
+lock. The public surface is unchanged.
+
+The session lock is the read loop's own lock. Routing an unmatched event is
+the cheapest and most frequent operation in the machine — the flood
+conformance target measures it in tens of nanoseconds — and an application
+polling `Err`, which the reconnect pattern encourages, was entering that
+same critical section to read a value that changes exactly once.
+
+The fix is to publish rather than to relax. Each terminal cause is still
+committed under the lock, and in that same critical section it is stored
+into an `atomic.Pointer` before `Done` closes. An unlocked read therefore
+observes either nothing yet or the committed first winner, never an
+intermediate state, and a consumer that has observed `Done` is guaranteed
+to observe the result. The stored pointer targets a local copy rather than
+the mutable field it mirrors, so nothing aliases state that later code
+could write.
+
+Two details are deliberate. A clean terminal leaves the published pointer
+nil, which is correct rather than a gap: `Err` reports nil both while a
+branch is active and after it completes cleanly, so the two cases were
+always indistinguishable through this accessor. And the client's
+termination flag is no longer consulted by `Err` at all — a non-nil
+published cause is exactly the terminal condition, since every commit path
+goes through one helper that sets both.
+
+`List.Completion` keeps the lock. It reads a stored completion event out of
+the machine, which is live state rather than a committed-once value, and
+the cost/benefit of an atomic fast path there does not justify the
+complexity.
+
+Three tests cover it: concurrent pollers running across the terminal
+transition — which is where the race detector earns its keep in CI, since
+this is exactly the kind of change that a lock-free read gets subtly wrong
+— first-winner preservation against later death attempts, and a clean list
+terminal that must keep reading as nil while its queue drains.
