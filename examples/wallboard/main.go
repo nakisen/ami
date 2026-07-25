@@ -138,9 +138,9 @@ func snapshot(ctx context.Context, client *ami.Client) (*board, error) {
 			return nil, err
 		}
 		switch {
-		case strings.EqualFold(e.Name(), "QueueMember"):
+		case e.Is("QueueMember"):
 			staged.members[memberKey(e)] = statusLabel(e.Get("Status"))
-		case strings.EqualFold(e.Name(), "QueueEntry"):
+		case e.Is("QueueEntry"):
 			staged.waiting++
 		}
 	}
@@ -152,10 +152,12 @@ func snapshot(ctx context.Context, client *ami.Client) (*board, error) {
 	return staged, nil
 }
 
-// apply folds one live event into the board.
+// apply folds one live event into the board. Event.Is matches with the
+// library's own ASCII folding, so the application agrees with the
+// subscription about what an event name means.
 func apply(b *board, e ami.Event) {
 	switch {
-	case strings.EqualFold(e.Name(), "QueueMemberStatus"):
+	case e.Is("QueueMemberStatus"):
 		b.members[memberKey(e)] = statusLabel(e.Get("Status"))
 	default:
 		// Join/Leave and QueueCallerJoin/QueueCallerLeave carry the

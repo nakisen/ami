@@ -123,6 +123,14 @@ implementation; the key evidence is kept here as rationale anchors.
   `Lookup(key) (string, bool)` distinguishes absence,
   `Values(key) []string` returns a defensive copy, and
   `Fields() iter.Seq2[string, string]` iterates the immutable sequence.
+- Event names, completion names, and the `EventList` header are protocol
+  identifiers, compared under ASCII case folding — not Unicode simple
+  folding, which equates characters AMI keeps distinct. `Event.Is(name)`
+  exposes that one predicate, so an application matches names exactly as
+  the router does; `strings.EqualFold` and `strings.ToLower` are wider and
+  can accept a name the subscription would never have delivered. Field
+  *keys* remain matched with the standard library's case-insensitive
+  comparison, which is where `Get`, `Lookup`, and `Values` already sit.
 - `Action`, `Response`, and `Event` are validated immutable views over the
   common field representation. A message containing `Event:` is classified
   as an event even when it also carries an event-specific `Response:`
@@ -451,9 +459,10 @@ function that would run on the read loop.
   library-owned.
 - The list state is registered before writing and tolerates
   item/completion arrival before the initial response. Completion names
-  and the `EventList` header are matched case-insensitively; every
-  correlated event that is not terminal — by declared name, by
-  `EventList: Complete`, or by `EventList: cancelled` — is an item.
+  and the `EventList` header are matched under ASCII case folding, as
+  every protocol identifier is; every correlated event that is not
+  terminal — by declared name, by `EventList: Complete`, or by
+  `EventList: cancelled` — is an item.
 - If initial success wins, ownership transfers through the returned
   `List` — even when the branch is already terminal: cleanly complete,
   cancelled, or failed by overflow or a count problem before the
@@ -958,6 +967,7 @@ func (m Message) Fields() iter.Seq2[string, string]
 func NewEvent(name string, fields ...Field) (Event, error)
 func NewResponse(fields ...Field) (Response, error)
 func (e Event) Name() string
+func (e Event) Is(name string) bool
 
 func Dial(ctx context.Context, cfg Config) (*Client, error)
 

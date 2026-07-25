@@ -1062,3 +1062,40 @@ could never be delivered would make a handler test prove nothing. A test
 therefore compares a constructed event field-by-field against the same
 frame parsed off a real piped session, so the two shapes are pinned equal
 rather than assumed equal.
+
+## 2026-07-25 — One exported predicate for protocol identifiers
+
+`Event.Is(name)` reports name equality under the library's own ASCII case
+folding.
+
+This is a semantic fix, not an ergonomic one. The library treats event and
+completion names as protocol identifiers and folds them ASCII-only, a
+choice already recorded here and implemented at the routing boundary.
+Applications had no access to that predicate, so they reimplemented
+matching with the standard library: the `wallboard` example used
+`strings.EqualFold` in five places and `router` keyed a map through
+`strings.ToLower`. Both are Unicode simple folding, which is *wider* than
+the protocol's. The Kelvin sign is the cheapest witness —
+`strings.EqualFold("Link", "LinK")` is true and the router's match is
+false — so an application could act on an event name that the subscription
+it came from would never have matched, in a library where the declared
+matcher and the application's branch are supposed to mean the same thing.
+
+The examples now use the predicate, which is half the point of adding it.
+`router` changes shape as a result: it scans its registered names with
+`Event.Is` instead of keying a map by a lowered name, since a predicate
+cannot be a map key. That is the honest trade for a handful of handlers,
+and the example says so — a large table would fold its own keys once
+instead of scanning.
+
+Two tests cover it: one pins ASCII case variants and near-miss names, and
+one asserts the predicate agrees with routing end to end, by declaring a
+subscription for `Link`, sending both the Kelvin-sign name and the ASCII
+one through a piped session, and requiring that only the ASCII event is
+delivered.
+
+`Message.Has(key)` was considered alongside it and rejected: `Lookup`'s
+second result already answers that question. Field keys also keep the
+standard library's case-insensitive comparison, because key matching is
+`Get`/`Lookup`/`Values` behavior rather than protocol identity, and
+narrowing it would be a separate decision with no evidence behind it.

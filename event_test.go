@@ -125,6 +125,62 @@ func TestNewEventMatchesDeliveredShape(t *testing.T) {
 	}
 }
 
+func TestEventIs(t *testing.T) {
+	e, err := NewEvent("PeerStatus", Field{Key: "Peer", Value: "PJSIP/synthetic"})
+	if err != nil {
+		t.Fatalf("NewEvent() error = %v", err)
+	}
+	for _, name := range []string{"PeerStatus", "peerstatus", "PEERSTATUS", "pEeRsTaTuS"} {
+		if !e.Is(name) {
+			t.Errorf("Is(%q) = false, want true under ASCII case folding", name)
+		}
+	}
+	for _, name := range []string{"", "PeerStatu", "PeerStatuss", "Peer Status", "QueueMemberStatus"} {
+		if e.Is(name) {
+			t.Errorf("Is(%q) = true, want false", name)
+		}
+	}
+}
+
+// TestEventIsAgreesWithRouting pins the reason Event.Is exists: the
+// library matches protocol identifiers with ASCII case folding, so an
+// application using strings.EqualFold can accept a name the subscription
+// would never have delivered. The Kelvin sign is the cheapest witness —
+// Unicode simple folding equates it with "k" and AMI does not.
+func TestEventIsAgreesWithRouting(t *testing.T) {
+	const kelvin = "LinK" // U+212A KELVIN SIGN
+	if !strings.EqualFold("Link", kelvin) {
+		t.Fatal("premise: strings.EqualFold folds the Kelvin sign to k")
+	}
+	built, err := NewEvent("Link")
+	if err != nil {
+		t.Fatalf("NewEvent() error = %v", err)
+	}
+	if built.Is(kelvin) {
+		t.Fatal("Is matched a name only Unicode folding equates")
+	}
+
+	// Routing agrees: a subscription declaring Link ignores the
+	// Unicode-equivalent name and delivers only the ASCII one.
+	c, s := dialTest(t, nil)
+	sub, err := c.Subscribe(SubSpec{Events: []string{"Link"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	s.event(kelvin, "Channel", "PJSIP/synthetic-0001")
+	s.event("link", "Channel", "PJSIP/synthetic-0002")
+	s.sync(c)
+
+	ev, err := sub.Next(t.Context())
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if !ev.Is("Link") || ev.Get("Channel") != "PJSIP/synthetic-0002" {
+		t.Fatalf("Next() delivered %q/%q, want the ASCII-folded match", ev.Name(), ev.Get("Channel"))
+	}
+}
+
 func TestNewResponse(t *testing.T) {
 	r, err := NewResponse(
 		Field{Key: "Response", Value: "Follows"},

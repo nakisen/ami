@@ -15,6 +15,20 @@ func (e Event) Name() string {
 	return e.Get("Event")
 }
 
+// Is reports whether the event's name equals name under ASCII case
+// folding: the same equivalence the library itself uses for SubSpec.Events,
+// FollowSpec and ListSpec completion names, and every other protocol
+// identifier comparison.
+//
+// Prefer it over strings.EqualFold, whose Unicode simple folding is wider
+// than the protocol's. The two disagree on inputs AMI treats as distinct —
+// Kelvin sign versus "k", dotless and dotted i — so an application
+// matching with strings.EqualFold can route an event the library would
+// never have matched to that name.
+func (e Event) Is(name string) bool {
+	return equalFoldASCII(e.Name(), name)
+}
+
 // NewEvent constructs an Event: for tests, and for application code that
 // synthesizes events. name becomes the event's Event field, placed first,
 // and must be non-empty and free of NUL, CR, and LF; the remaining fields

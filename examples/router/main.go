@@ -16,11 +16,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"maps"
 	"os"
 	"os/signal"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/nakisen/ami"
@@ -31,32 +29,43 @@ import (
 // tiny: registration completes before Run starts, so there is no
 // concurrent mutation to coordinate.
 type Router struct {
-	handlers map[string]func(ami.Event)
+	names    []string
+	handlers []func(ami.Event)
 }
 
 func NewRouter() *Router {
-	return &Router{handlers: map[string]func(ami.Event){}}
+	return &Router{}
 }
 
-// Handle registers fn for the named event, matched case-insensitively.
+// Handle registers fn for the named event.
 func (r *Router) Handle(name string, fn func(ami.Event)) {
-	r.handlers[strings.ToLower(name)] = fn
+	r.names = append(r.names, name)
+	r.handlers = append(r.handlers, fn)
 }
 
 // Names returns the registered event names, ready to become the
 // subscription's declarative SubSpec.Events filter: events without a
 // handler are then never queued at all.
 func (r *Router) Names() []string {
-	return slices.Collect(maps.Keys(r.handlers))
+	return slices.Clone(r.names)
 }
 
 // Run consumes sub until ctx ends or the stream terminates, invoking
 // each event's handler on the calling goroutine — never on the
 // client's read loop — and returns the stream's terminal error.
+//
+// Matching goes through Event.Is, so the router agrees with the
+// subscription about what an event name means: both use the protocol's
+// ASCII case folding, which strings.EqualFold and strings.ToLower do not
+// reproduce. A registry of this size scans; a large table would fold its
+// own keys once instead.
 func (r *Router) Run(ctx context.Context, sub *ami.Subscription) error {
 	return sub.Consume(ctx, func(e ami.Event) error {
-		if fn := r.handlers[strings.ToLower(e.Name())]; fn != nil {
-			fn(e)
+		for i, name := range r.names {
+			if e.Is(name) {
+				r.handlers[i](e)
+				return nil
+			}
 		}
 		return nil
 	})
