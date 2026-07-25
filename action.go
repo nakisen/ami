@@ -1,11 +1,8 @@
 package ami
 
 import (
-	"errors"
-	"fmt"
 	"iter"
 	"slices"
-	"strings"
 )
 
 // An Action describes one AMI action: the action name plus the ordered
@@ -37,23 +34,11 @@ type Action struct {
 // limits are enforced against the connection's WireLimits when the action
 // is written.
 func NewAction(name string, fields ...Field) (Action, error) {
-	if name == "" {
-		return Action{}, errors.New("ami: invalid action: empty name")
+	if err := validateName("action", name); err != nil {
+		return Action{}, err
 	}
-	if strings.ContainsAny(name, "\x00\r\n") {
-		return Action{}, errors.New("ami: invalid action: name contains NUL, CR, or LF")
-	}
-	for i, f := range fields {
-		switch {
-		case f.Key == "":
-			return Action{}, fmt.Errorf("ami: invalid action: field %d: empty key", i)
-		case strings.ContainsAny(f.Key, ":\x00\r\n"):
-			return Action{}, fmt.Errorf("ami: invalid action: field %d: key contains a colon, NUL, CR, or LF", i)
-		case strings.EqualFold(f.Key, "Action"), strings.EqualFold(f.Key, "ActionID"):
-			return Action{}, fmt.Errorf("ami: invalid action: field %d: reserved key %q", i, f.Key)
-		case strings.ContainsAny(f.Value, "\x00\r\n"):
-			return Action{}, fmt.Errorf("ami: invalid action: field %d: value contains NUL, CR, or LF", i)
-		}
+	if err := validateFields("action", []string{"Action", "ActionID"}, fields); err != nil {
+		return Action{}, err
 	}
 	return Action{name: name, fields: slices.Clone(fields)}, nil
 }

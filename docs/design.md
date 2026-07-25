@@ -139,6 +139,16 @@ implementation; the key evidence is kept here as rationale anchors.
   Client-configured count/byte limits are validated later, before
   dispatch, and connection-level size limits are validated by the framing
   layer as the action is encoded.
+- `NewEvent` and `NewResponse` construct the inbound views directly, under
+  the same shape and injection validation as `NewAction` and with the
+  same copy-on-construction rule. They exist because an application's pure
+  event-folding function is otherwise untestable: the fields are
+  unexported, `amitest` deliberately does not import the root package, and
+  a real socket would be the only way to obtain an `Event`. Each
+  constructor owns the envelope field that classifies its kind — `NewEvent`
+  synthesizes `Event` and rejects a caller-supplied one, `NewResponse`
+  synthesizes nothing and rejects an `Event` key — so a constructed value
+  cannot be one the delivery path could never produce.
 - The parser handles both `Command` output framings: legacy
   `Response: Follows` terminated by `--END COMMAND--`, and the repeated
   `Output:` header form. Both are covered by line, item, and total-output
@@ -945,6 +955,8 @@ func (m Message) Lookup(key string) (string, bool)
 func (m Message) Values(key string) []string
 func (m Message) Fields() iter.Seq2[string, string]
 
+func NewEvent(name string, fields ...Field) (Event, error)
+func NewResponse(fields ...Field) (Response, error)
 func (e Event) Name() string
 
 func Dial(ctx context.Context, cfg Config) (*Client, error)

@@ -1,6 +1,7 @@
 package ami
 
 import (
+	"fmt"
 	"iter"
 	"slices"
 	"strings"
@@ -35,6 +36,44 @@ func newMessage(fields []Field) Message {
 		return Message{}
 	}
 	return Message{fields: slices.Clone(fields)}
+}
+
+// validateName applies the naming rules every constructed message kind
+// shares: a non-empty name free of NUL, CR, and LF.
+func validateName(kind, name string) error {
+	if name == "" {
+		return fmt.Errorf("ami: invalid %s: empty name", kind)
+	}
+	if strings.ContainsAny(name, "\x00\r\n") {
+		return fmt.Errorf("ami: invalid %s: name contains NUL, CR, or LF", kind)
+	}
+	return nil
+}
+
+// validateFields applies the field rules every constructed message kind
+// shares: non-empty keys free of colons, NUL, CR, and LF, values free of
+// NUL, CR, and LF, and no key from reserved, which names the envelope
+// fields the constructor itself owns. NUL is rejected alongside the line
+// terminators because C-based managers truncate at it, so a NUL-bearing
+// value could mean something other than what was validated.
+func validateFields(kind string, reserved []string, fields []Field) error {
+	for i, f := range fields {
+		switch {
+		case f.Key == "":
+			return fmt.Errorf("ami: invalid %s: field %d: empty key", kind, i)
+		case strings.ContainsAny(f.Key, ":\x00\r\n"):
+			return fmt.Errorf("ami: invalid %s: field %d: key contains a colon, NUL, CR, or LF", kind, i)
+		}
+		for _, r := range reserved {
+			if strings.EqualFold(f.Key, r) {
+				return fmt.Errorf("ami: invalid %s: field %d: reserved key %q", kind, i, f.Key)
+			}
+		}
+		if strings.ContainsAny(f.Value, "\x00\r\n") {
+			return fmt.Errorf("ami: invalid %s: field %d: value contains NUL, CR, or LF", kind, i)
+		}
+	}
+	return nil
 }
 
 // messageFromWire adopts fields parsed by internal/wire, converting them

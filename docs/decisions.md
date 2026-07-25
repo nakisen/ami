@@ -1026,3 +1026,39 @@ path and the outcome-unknown partial-write path — where the old shape
 could only assert that a struct field was nil.
 `outcome_regression_test.go` is unchanged in substance and still passes,
 which is the evidence that the split moved no correlation semantics.
+
+## 2026-07-25 — Consumers can construct events and responses
+
+`NewEvent(name, fields...)` and `NewResponse(fields...)` join the public
+surface.
+
+The gap they close is specific. An application's most testable code is the
+pure function that folds an event into state — the `wallboard` example's
+board update is exactly that shape — and it was untestable: `Message`'s
+fields are unexported, there is no constructor, and `amitest` deliberately
+does not import the root package, so the only way to obtain an `ami.Event`
+was a real socket plus a dialed client. For a library whose stated features
+include testing, that is the cheapest high-value addition available, and it
+adds no mechanism: these are constructors, not another delivery path.
+
+Validation is shared with `NewAction` rather than reimplemented, so the
+same shape and injection rules apply to every constructed message kind:
+non-empty names, no NUL, CR, or LF in names, keys, or values, no colons in
+keys, duplicate keys preserved in order, and fields copied so later caller
+mutation cannot reach the constructed value. What differs is which keys a
+constructor reserves. `NewAction` keeps owning `Action` and `ActionID`.
+`NewEvent` synthesizes `Event` as the leading field and rejects a
+caller-supplied one, which is what makes the delivered invariant hold for
+constructed events too — `Name` is never empty — while `ActionID`,
+`EventList`, and `Response` stay legal, because delivered events carry
+them and an `OriginateResponse` carries all three. `NewResponse`
+synthesizes nothing, since a response's disposition is the caller's
+declaration including its absence, and rejects an `Event` key, because a
+message carrying one classifies as an event and could never arrive as a
+response.
+
+That reserved-key discipline is the point of the addition: a fixture that
+could never be delivered would make a handler test prove nothing. A test
+therefore compares a constructed event field-by-field against the same
+frame parsed off a real piped session, so the two shapes are pinned equal
+rather than assumed equal.
