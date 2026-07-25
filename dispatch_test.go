@@ -19,11 +19,13 @@ import (
 func TestDoSuccess(t *testing.T) {
 	c, s := dialTest(t, nil)
 	res := mustDo(t, c, s, "CoreStatus", "CoreStartupTime", "synthetic")
-	if res.Response.Get("CoreStartupTime") != "synthetic" {
-		t.Fatalf("response fields lost: %v", res.Response)
+	if res.Get("CoreStartupTime") != "synthetic" {
+		t.Fatalf("response fields lost: %v", res)
 	}
-	if res.ActionID == "" || res.Follow != nil {
-		t.Fatalf("DoResult = %+v, want an ActionID and no follow", res)
+	// The response carries the client-assigned ActionID back, which is
+	// where a caller that needs it now reads it.
+	if res.Get("ActionID") == "" {
+		t.Fatalf("response carried no echoed ActionID: %v", res)
 	}
 }
 
@@ -31,8 +33,8 @@ func TestDoDistinctActionIDs(t *testing.T) {
 	c, s := dialTest(t, nil)
 	a := mustDo(t, c, s, "Ping")
 	b := mustDo(t, c, s, "Ping")
-	if a.ActionID == b.ActionID {
-		t.Fatalf("two dispatches shared ActionID %q", a.ActionID)
+	if id := a.Get("ActionID"); id == b.Get("ActionID") {
+		t.Fatalf("two dispatches shared ActionID %q", id)
 	}
 }
 
@@ -419,7 +421,7 @@ func TestAdaptersHoldConsumerLease(t *testing.T) {
 	})
 }
 
-func TestDoWithFollow(t *testing.T) {
+func TestDoFollow(t *testing.T) {
 	c, s := dialTest(t, nil)
 	watcher, err := c.Subscribe(SubSpec{})
 	if err != nil {
@@ -428,42 +430,42 @@ func TestDoWithFollow(t *testing.T) {
 	defer watcher.Close()
 
 	done := make(chan struct{})
-	var res DoResult
+	var follow *Subscription
 	var doErr error
 	go func() {
 		defer close(done)
 		act, _ := NewAction("Originate")
-		res, doErr = c.Do(context.Background(), act,
-			WithFollow(FollowSpec{CompletionEvents: []string{"OriginateResponse"}}))
+		_, follow, doErr = c.DoFollow(context.Background(), act,
+			FollowSpec{CompletionEvents: []string{"OriginateResponse"}})
 	}()
 	act := s.readAction()
 	s.respond(act.id, "Success")
 	<-done
 	if doErr != nil {
-		t.Fatalf("Do() = %v", doErr)
+		t.Fatalf("DoFollow() = %v", doErr)
 	}
-	if res.Follow == nil {
-		t.Fatal("successful Do with follow returned no subscription")
+	if follow == nil {
+		t.Fatal("successful DoFollow returned no subscription")
 	}
 
 	s.event("DialBegin", "ActionID", act.id)
 	s.event("OriginateResponse", "ActionID", act.id, "Reason", "4")
 
-	ev, err := res.Follow.Next(context.Background())
+	ev, err := follow.Next(context.Background())
 	if err != nil || ev.Name() != "DialBegin" {
 		t.Fatalf("follow Next() = (%v, %v)", ev, err)
 	}
-	ev, err = res.Follow.Next(context.Background())
+	ev, err = follow.Next(context.Background())
 	if err != nil || ev.Name() != "OriginateResponse" {
 		t.Fatalf("follow completion Next() = (%v, %v)", ev, err)
 	}
-	if _, err := res.Follow.Next(context.Background()); err != io.EOF {
+	if _, err := follow.Next(context.Background()); err != io.EOF {
 		t.Fatalf("follow after completion = %v, want io.EOF", err)
 	}
-	if err := res.Follow.Err(); err != nil {
+	if err := follow.Err(); err != nil {
 		t.Fatalf("clean follow Err() = %v, want nil", err)
 	}
-	res.Follow.Close()
+	follow.Close()
 
 	// Correlated events also fanned out to the ordinary subscription.
 	for _, want := range []string{"DialBegin", "OriginateResponse"} {
@@ -474,20 +476,26 @@ func TestDoWithFollow(t *testing.T) {
 	}
 }
 
-func TestDoWithFollowErrorResponseReleasesBranch(t *testing.T) {
+func TestDoFollowErrorResponseReleasesBranch(t *testing.T) {
 	c, s := dialTest(t, nil)
 	done := make(chan error, 1)
+	sub := make(chan *Subscription, 1)
 	go func() {
 		act, _ := NewAction("Originate")
-		_, err := c.Do(context.Background(), act,
-			WithFollow(FollowSpec{CompletionEvents: []string{"OriginateResponse"}}))
+		_, follow, err := c.DoFollow(context.Background(), act,
+			FollowSpec{CompletionEvents: []string{"OriginateResponse"}})
+		sub <- follow
 		done <- err
 	}()
 	act := s.readAction()
 	s.respond(act.id, "Error", "Message", "nope")
 	var re *ResponseError
 	if err := <-done; !errors.As(err, &re) {
-		t.Fatalf("Do() = %v, want *ResponseError", err)
+		t.Fatalf("DoFollow() = %v, want *ResponseError", err)
+	}
+	// No caller-owned resource escapes a failed dispatch.
+	if follow := <-sub; follow != nil {
+		t.Fatal("failed DoFollow returned a subscription")
 	}
 	// The provisional follow is gone; its late correlated event is an
 	// ordinary event for a completed request and the client is alive.

@@ -80,14 +80,17 @@ func TestDoPartialWriteIsOutcomeUnknown(t *testing.T) {
 	c, _, f := dialFailWrite(t, true, cause)
 	f.armed.Store(true)
 	act, _ := NewAction("Originate")
-	_, err := c.Do(context.Background(), act,
-		WithFollow(FollowSpec{CompletionEvents: []string{"OriginateResponse"}}))
+	_, follow, err := c.DoFollow(context.Background(), act,
+		FollowSpec{CompletionEvents: []string{"OriginateResponse"}})
 	var re *RequestError
 	if !errors.As(err, &re) || re.Phase != PhaseWrite || !re.MayHaveExecuted() {
-		t.Fatalf("Do() = %v, want outcome-unknown write RequestError", err)
+		t.Fatalf("DoFollow() = %v, want outcome-unknown write RequestError", err)
 	}
 	if !errors.Is(err, ErrOutcomeUnknown) || !errors.Is(err, cause) {
-		t.Fatalf("Do() = %v, want ErrOutcomeUnknown and the transport cause", err)
+		t.Fatalf("DoFollow() = %v, want ErrOutcomeUnknown and the transport cause", err)
+	}
+	if follow != nil {
+		t.Fatal("failed DoFollow returned a subscription")
 	}
 	<-c.Done()
 	if err := c.Err(); !errors.Is(err, cause) {
@@ -127,21 +130,21 @@ func TestListOverflowTerminatesOnlyTheList(t *testing.T) {
 func TestFollowLag(t *testing.T) {
 	c, s := dialTest(t, nil)
 	done := make(chan struct{})
-	var res DoResult
+	var follow *Subscription
 	go func() {
 		defer close(done)
 		act, _ := NewAction("Originate")
-		res, _ = c.Do(context.Background(), act, WithFollow(FollowSpec{BufferItems: 1}))
+		_, follow, _ = c.DoFollow(context.Background(), act, FollowSpec{BufferItems: 1})
 	}()
 	act := s.readAction()
 	s.respond(act.id, "Success")
 	<-done
-	defer res.Follow.Close()
+	defer follow.Close()
 
 	s.event("DialBegin", "ActionID", act.id)
 	s.event("DialState", "ActionID", act.id) // exceeds the single-item buffer
-	waitDone(t, res.Follow.Done(), "lagged follow")
-	if err := res.Follow.Err(); !errors.Is(err, ErrLagged) {
+	waitDone(t, follow.Done(), "lagged follow")
+	if err := follow.Err(); !errors.Is(err, ErrLagged) {
 		t.Fatalf("follow Err() = %v, want ErrLagged", err)
 	}
 	mustDo(t, c, s, "Ping")
@@ -160,7 +163,7 @@ func TestConflictingEnvelopeIsFatal(t *testing.T) {
 func TestDoLegacyCommandResponse(t *testing.T) {
 	c, s := dialTest(t, nil)
 	done := make(chan struct{})
-	var res DoResult
+	var res Response
 	var doErr error
 	go func() {
 		defer close(done)
@@ -173,7 +176,7 @@ func TestDoLegacyCommandResponse(t *testing.T) {
 	if doErr != nil {
 		t.Fatalf("Do(Command) = %v", doErr)
 	}
-	out := res.Response.Values("Output")
+	out := res.Values("Output")
 	if len(out) != 2 || out[0] != "synthetic line one" || out[1] != "synthetic line two" {
 		t.Fatalf("command output = %q", out)
 	}

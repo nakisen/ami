@@ -72,9 +72,9 @@ func main() {
 		log.Fatalf("compose Originate action: %v", err)
 	}
 
-	res, err := client.Do(ctx, originate, ami.WithFollow(ami.FollowSpec{
+	resp, follow, err := client.DoFollow(ctx, originate, ami.FollowSpec{
 		CompletionEvents: []string{"OriginateResponse"},
-	}))
+	})
 	if err != nil {
 		if respErr, ok := errors.AsType[*ami.ResponseError](err); ok {
 			// The Message field is untrusted remote text — acceptable in a
@@ -83,12 +83,14 @@ func main() {
 		}
 		log.Fatalf("originate: %v", err)
 	}
-	fmt.Println("queued:", res.Response.Get("Message"))
+	fmt.Println("queued:", resp.Get("Message"))
 
-	// The follow delivers only events correlated to this action's ID and
-	// completes cleanly once the declared OriginateResponse arrives, so
-	// a clean Consume return means the outcome below is final.
-	err = res.Follow.Consume(ctx, func(e ami.Event) error {
+	// The follow is now the caller's to close. Consume takes that over:
+	// it delivers only events correlated to this action's ID, closes the
+	// subscription on every exit path, and completes cleanly once the
+	// declared OriginateResponse arrives — so a clean return means the
+	// outcome below is final.
+	err = follow.Consume(ctx, func(e ami.Event) error {
 		fmt.Printf("%s: Response=%s Reason=%s Channel=%s\n",
 			e.Name(), e.Get("Response"), e.Get("Reason"), e.Get("Channel"))
 		return nil

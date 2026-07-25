@@ -36,8 +36,8 @@ type SubSpec struct {
 
 // A Subscription is one explicit, bounded event stream: ordinary
 // unsolicited events registered through Client.Subscribe, or the
-// correlated follow stream a successful Do transferred through
-// DoResult. It preserves matching events in observed wire order and is
+// correlated follow stream a successful Client.DoFollow transferred to
+// the caller. It preserves matching events in observed wire order and is
 // single-consumer.
 type Subscription struct {
 	c *Client

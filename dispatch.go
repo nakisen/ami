@@ -17,9 +17,9 @@ import (
 var errWriteAdmission = errors.New("ami: write admission timed out")
 
 // A FollowSpec requests an ActionID-correlated follow subscription
-// registered atomically with a Do dispatch, before the first action
-// byte is written. The client supplies the ActionID; the spec cannot
-// override it.
+// registered atomically with a DoFollow dispatch, before the first
+// action byte is written. The client supplies the ActionID; the spec
+// cannot override it.
 type FollowSpec struct {
 	// EventNames selects the nonterminal correlated events to deliver;
 	// empty selects every correlated nonterminal event.
@@ -33,40 +33,8 @@ type FollowSpec struct {
 	CompletionEvents []string
 
 	// BufferItems overrides the follow queue's item bound; zero selects
-	// Limits.SubscriptionQueueItems.
+	// Limits.SubscriptionQueueItems and negative is rejected.
 	BufferItems int
-}
-
-// A DoOption configures one Do dispatch.
-type DoOption func(*doOptions)
-
-type doOptions struct {
-	follow *FollowSpec
-}
-
-// WithFollow registers spec's follow subscription atomically with the
-// dispatch. Only a successful Do transfers the follow to the caller
-// through DoResult; on every non-nil error the client releases the
-// provisional branch itself.
-func WithFollow(spec FollowSpec) DoOption {
-	s := FollowSpec{
-		EventNames:       slices.Clone(spec.EventNames),
-		CompletionEvents: slices.Clone(spec.CompletionEvents),
-		BufferItems:      spec.BufferItems,
-	}
-	return func(o *doOptions) {
-		o.follow = &s
-	}
-}
-
-// DoResult is a successful dispatch's outcome: the immediate response,
-// the client-assigned opaque ActionID, and the adopted follow
-// subscription when one was requested. Do returns it only with a nil
-// error; no caller-owned resource escapes a failed dispatch.
-type DoResult struct {
-	Response Response
-	ActionID string
-	Follow   *Subscription
 }
 
 // Do sends one action and waits for its immediate AMI response, both
@@ -74,19 +42,40 @@ type DoResult struct {
 // have executed the action: a *RequestError locates the failure and
 // reports MayHaveExecuted, and a *ResponseError carries an AMI error
 // response. The library never retries an action.
-func (c *Client) Do(ctx context.Context, action Action, opts ...DoOption) (DoResult, error) {
-	var o doOptions
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&o)
-		}
+//
+// The response echoes the client-assigned ActionID, so a caller that
+// needs it reads Get("ActionID") — remote data, like every other field.
+// A failed dispatch reports it through RequestError.ActionID.
+func (c *Client) Do(ctx context.Context, action Action) (Response, error) {
+	resp, _, err := c.do(ctx, action, nil)
+	return resp, err
+}
+
+// DoFollow is Do with an ActionID-correlated follow subscription
+// registered atomically before the first action byte is written, so an
+// immediate completion cannot outrun registration. Only a nil error
+// transfers the follow to the caller, who must Close it; on every
+// non-nil error the returned subscription is nil and the client has
+// already released the provisional branch itself.
+func (c *Client) DoFollow(ctx context.Context, action Action, spec FollowSpec) (Response, *Subscription, error) {
+	if spec.BufferItems < 0 {
+		return Response{}, nil, errors.New("ami: FollowSpec.BufferItems is negative")
 	}
+	return c.do(ctx, action, &spec)
+}
+
+// do is the shared dispatch core. A nil follow dispatches a plain
+// action; otherwise the follow branch is registered with the pending
+// reservation and adopted only on success. Registration folds the
+// declared names into the router's own sets, so the caller's slices are
+// never retained.
+func (c *Client) do(ctx context.Context, action Action, follow *FollowSpec) (Response, *Subscription, error) {
 	var admit demux.AdmitOptions[Message]
-	if o.follow != nil {
+	if follow != nil {
 		admit.Follow = &demux.FollowOptions{
-			Events:      o.follow.EventNames,
-			Completions: o.follow.CompletionEvents,
-			Caps:        c.followCaps(o.follow.BufferItems),
+			Events:      follow.EventNames,
+			Completions: follow.CompletionEvents,
+			Caps:        c.followCaps(follow.BufferItems),
 		}
 	}
 	id := c.newActionID(demux.KindRequest)
@@ -95,34 +84,34 @@ func (c *Client) Do(ctx context.Context, action Action, opts ...DoOption) (DoRes
 	// release included — so Done cannot close in the middle of them.
 	defer release()
 	if err != nil {
-		return DoResult{}, err
+		return Response{}, nil, err
 	}
 
 	if !cpl.Delivered {
 		c.mu.Lock()
-		if o.follow != nil {
+		if follow != nil {
 			c.resolveDeadLocked(func() { c.machine.CloseFollow(cpl.Ticket) })
 		}
 		cause := c.causeLocked()
 		c.mu.Unlock()
-		return DoResult{}, &RequestError{Phase: PhaseResponse, ActionID: id, mayHaveExecuted: true, cause: cause}
+		return Response{}, nil, &RequestError{Phase: PhaseResponse, ActionID: id, mayHaveExecuted: true, cause: cause}
 	}
 	if !responseSuccess(cpl.Response) {
-		if o.follow != nil {
+		if follow != nil {
 			c.mu.Lock()
 			c.machine.CloseFollow(cpl.Ticket)
 			c.mu.Unlock()
 		}
-		return DoResult{}, &ResponseError{resp: Response{cpl.Response}}
+		return Response{}, nil, &ResponseError{resp: Response{cpl.Response}}
 	}
-	res := DoResult{Response: Response{cpl.Response}, ActionID: id}
-	if o.follow != nil {
-		c.mu.Lock()
-		b := c.registerBranchLocked(c.machine.AdoptFollow(cpl.Ticket))
-		c.mu.Unlock()
-		res.Follow = &Subscription{c: c, b: b}
+	resp := Response{cpl.Response}
+	if follow == nil {
+		return resp, nil, nil
 	}
-	return res, nil
+	c.mu.Lock()
+	b := c.registerBranchLocked(c.machine.AdoptFollow(cpl.Ticket))
+	c.mu.Unlock()
+	return resp, &Subscription{c: c, b: b}, nil
 }
 
 // A ListSpec declares how a list action completes. Completion

@@ -175,10 +175,10 @@ func dialTest(t *testing.T, mutate func(*Config)) (*Client, *script) {
 	return c, s
 }
 
-func mustDo(t *testing.T, c *Client, s *script, name string, respKV ...string) DoResult {
+func mustDo(t *testing.T, c *Client, s *script, name string, respKV ...string) Response {
 	t.Helper()
 	done := make(chan struct{})
-	var res DoResult
+	var res Response
 	var doErr error
 	go func() {
 		defer close(done)

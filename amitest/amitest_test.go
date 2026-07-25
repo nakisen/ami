@@ -57,7 +57,7 @@ func dialServer(t *testing.T, srv *amitest.Server, mutate func(*ami.Config)) *am
 	return c
 }
 
-func mustDo(t *testing.T, c *ami.Client, name string, fields ...ami.Field) ami.DoResult {
+func mustDo(t *testing.T, c *ami.Client, name string, fields ...ami.Field) ami.Response {
 	t.Helper()
 	act, err := ami.NewAction(name, fields...)
 	if err != nil {
@@ -89,7 +89,7 @@ func TestDialAndBuiltinPing(t *testing.T) {
 		t.Errorf("Banner() = %q, want %q", got, amitest.DefaultBanner)
 	}
 	res := mustDo(t, c, "Ping")
-	if got := res.Response.Get("Ping"); got != "Pong" {
+	if got := res.Get("Ping"); got != "Pong" {
 		t.Errorf("built-in Ping answered %q, want Pong", got)
 	}
 	if n := srv.SessionCount(); n != 1 {
@@ -278,7 +278,7 @@ func TestEventMaskGatesBroadcasts(t *testing.T) {
 	srv.Event("PeerStatus", "Peer", "PJSIP/masked")
 
 	res := mustDo(t, c, "Events", ami.Field{Key: "EventMask", Value: "on"})
-	if got := res.Response.Get("Events"); got != "On" {
+	if got := res.Get("Events"); got != "On" {
 		t.Errorf("Events response = %q, want On", got)
 	}
 
@@ -341,7 +341,7 @@ func TestEventMaskVocabulary(t *testing.T) {
 			if tc.on {
 				wantState = "On"
 			}
-			if got := res.Response.Get("Events"); got != wantState {
+			if got := res.Get("Events"); got != wantState {
 				t.Fatalf("Events(%q) response = %q, want %q", tc.mask, got, wantState)
 			}
 
@@ -425,7 +425,7 @@ func TestCustomEventsHandlerCanSetEventMask(t *testing.T) {
 	defer sub.Close()
 
 	res := mustDo(t, c, "Events", ami.Field{Key: "EventMask", Value: "system,call"})
-	if got := res.Response.Get("Handler"); got != "custom" {
+	if got := res.Get("Handler"); got != "custom" {
 		t.Fatalf("Events response Handler = %q, want custom", got)
 	}
 	srv.Event("CustomMaskProbe", "Value", "first-visible")
@@ -543,13 +543,13 @@ func TestLegacyCommandResponse(t *testing.T) {
 			c := dialServer(t, srv, nil)
 
 			res := mustDo(t, c, "Command", ami.Field{Key: "Command", Value: "synthetic show"})
-			if got := res.Response.Get("Response"); got != "Follows" {
+			if got := res.Get("Response"); got != "Follows" {
 				t.Errorf("Response = %q, want Follows", got)
 			}
-			if got := res.Response.Get("Privilege"); got != "Command" {
+			if got := res.Get("Privilege"); got != "Command" {
 				t.Errorf("Privilege = %q, want Command", got)
 			}
-			got := res.Response.Values("Output")
+			got := res.Values("Output")
 			if len(got) != len(tc.want) {
 				t.Fatalf("Output = %q, want %q", got, tc.want)
 			}
@@ -570,7 +570,7 @@ func TestModernCommandOutput(t *testing.T) {
 	c := dialServer(t, srv, nil)
 
 	res := mustDo(t, c, "Command", ami.Field{Key: "Command", Value: "synthetic show"})
-	got := res.Response.Values("Output")
+	got := res.Values("Output")
 	if len(got) != 2 || got[0] != "synthetic line one" || got[1] != "synthetic line two" {
 		t.Fatalf("Output = %q", got)
 	}
@@ -641,7 +641,7 @@ func TestDeferredReplyAcrossActions(t *testing.T) {
 	c := dialServer(t, srv, nil)
 
 	type outcome struct {
-		res ami.DoResult
+		res ami.Response
 		err error
 	}
 	holdDone := make(chan outcome, 1)
@@ -656,15 +656,15 @@ func TestDeferredReplyAcrossActions(t *testing.T) {
 	}()
 	waitDone(t, arrived, "Hold arrival")
 
-	if res := mustDo(t, c, "Flush"); res.Response.Get("Origin") != "flush" {
-		t.Errorf("Flush response Origin = %q", res.Response.Get("Origin"))
+	if res := mustDo(t, c, "Flush"); res.Get("Origin") != "flush" {
+		t.Errorf("Flush response Origin = %q", res.Get("Origin"))
 	}
 	select {
 	case o := <-holdDone:
 		if o.err != nil {
 			t.Fatalf("Do(Hold) error = %v", o.err)
 		}
-		if got := o.res.Response.Get("Origin"); got != "held" {
+		if got := o.res.Get("Origin"); got != "held" {
 			t.Errorf("Hold response Origin = %q, want held", got)
 		}
 	case <-time.After(10 * time.Second):

@@ -988,3 +988,41 @@ design.md's explicit-subscriptions section records the one-idiom rule and
 why the options were dropped; the API sketch carries `SubSpec` in place of
 the option constructors. `FollowSpec` still arrives through the
 `WithFollow` option, which the next slice removes along with `DoResult`.
+
+## 2026-07-25 — Do splits by whether the caller adopts a follow
+
+`Do` returns `(Response, error)`. `DoFollow` returns
+`(Response, *Subscription, error)`. `DoResult`, `DoOption`, and
+`WithFollow` are gone, and both entry points share one private core, so
+admission, registration, the bounded write, its resolution, and the
+awaited response are byte-for-byte the same code as before.
+
+`DoResult` charged every call for the follow case. Its three fields told
+the story: `Response` was the value every caller wanted, `Follow` was
+non-nil only for the callers who asked, and `ActionID` was already in the
+response, because Asterisk echoes it and the fake server models that. So
+the common call read `if _, err := client.Do(...)`, discarding a struct
+built to describe a case it had not requested — which is what every
+example and the package godoc `Example` actually did. Splitting the entry
+points makes "does this dispatch hand me a resource to close?" a property
+of the call rather than a runtime question about a struct field, and the
+follow arrives as a plainly owned return value.
+
+The ActionID is deliberately not a third return value. A caller who needs
+it reads `Get("ActionID")` from the response — remote data, classified like
+every other field, which is also the honest description of where it came
+from — and a failed dispatch still reports the client-assigned ID through
+`RequestError.ActionID`.
+
+`FollowSpec.BufferItems` now rejects a negative value instead of silently
+treating it as unset, matching `SubSpec.BufferItems` and the rest of the
+configuration surface: zero selects the default, negative is an error. The
+rejection happens before admission, so it is a clean definitely-not-sent.
+
+The follow's ownership contract is unchanged and now testable directly:
+only a nil error transfers the subscription, and the error paths return a
+nil `*Subscription`. Two tests assert that explicitly — the error-response
+path and the outcome-unknown partial-write path — where the old shape
+could only assert that a struct field was nil.
+`outcome_regression_test.go` is unchanged in substance and still passes,
+which is the evidence that the split moved no correlation semantics.

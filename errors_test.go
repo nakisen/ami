@@ -110,19 +110,25 @@ func TestDispatchRejectionMappings(t *testing.T) {
 
 	// Matcher limit through a follow spec: rejected before any byte.
 	o, _ := NewAction("Originate")
-	_, err = c.Do(context.Background(), o, WithFollow(FollowSpec{
+	_, _, err = c.DoFollow(context.Background(), o, FollowSpec{
 		EventNames: []string{"a", "b", "c"},
-	}))
+	})
 	if err == nil || !strings.Contains(err.Error(), "matcher") {
-		t.Fatalf("Do with an oversized matcher = %v", err)
+		t.Fatalf("DoFollow with an oversized matcher = %v", err)
 	}
 
-	// Structurally invalid follow options: an empty event name.
-	_, err = c.Do(context.Background(), o, WithFollow(FollowSpec{
+	// Structurally invalid follow spec: an empty event name.
+	_, _, err = c.DoFollow(context.Background(), o, FollowSpec{
 		EventNames: []string{""},
-	}))
+	})
 	if err == nil || !strings.Contains(err.Error(), "invalid") {
-		t.Fatalf("Do with an empty follow name = %v", err)
+		t.Fatalf("DoFollow with an empty follow name = %v", err)
+	}
+
+	// A negative buffer bound is rejected locally, like SubSpec's.
+	_, _, err = c.DoFollow(context.Background(), o, FollowSpec{BufferItems: -1})
+	if err == nil || !strings.Contains(err.Error(), "BufferItems") {
+		t.Fatalf("DoFollow with a negative buffer bound = %v", err)
 	}
 
 	// Subscription matcher limit.

@@ -281,10 +281,20 @@ executed the action:
   is suppressed during bounded retirement.
 
 AMI actions such as asynchronous Originate can produce a correlated event
-after the immediate response. v0 `Do` supports an optional declarative
-`FollowSpec`. The client installs the ActionID-specific follow before
-writing and returns it with `DoResult`; it does not ask callers to
-construct an ActionID and race `Subscribe` against `Do`.
+after the immediate response. `DoFollow` takes a declarative `FollowSpec`
+and returns the adopted subscription as its own result. The client
+installs the ActionID-specific follow before writing, so it never asks
+callers to construct an ActionID and race `Subscribe` against a dispatch.
+
+The two dispatch entry points are split by whether the caller adopts a
+resource: `Do` returns `(Response, error)`, and `DoFollow` returns
+`(Response, *Subscription, error)`. A single `Do` returning a result
+struct made every plain call pay for a field only the follow case uses,
+and made "did I get a follow?" a runtime question about a struct field
+instead of a compile-time property of the call. The ActionID is not a
+third return value: the server echoes it in the response, so a caller who
+wants it reads `Get("ActionID")` like any other field, and a failed
+dispatch reports it through `RequestError.ActionID`.
 
 - Follow filters and terminal event names are declarative and bounded. The
   client supplies the ActionID internally; follow options cannot override
@@ -299,10 +309,10 @@ construct an ActionID and race `Subscribe` against `Do`.
   `ErrLagged` wins and the terminal event is not silently dropped behind a
   clean EOF. With no declared completion event, the caller must close the
   follow explicitly.
-- Only a successful `Do` transfers follow ownership to the caller. Every
-  non-nil `Do` error closes the provisional follow and leaves all
-  retirement/drain ownership inside the client; no partial result contains
-  a caller-owned resource.
+- Only a successful `DoFollow` transfers follow ownership to the caller.
+  Every non-nil error returns a nil subscription, closes the provisional
+  follow, and leaves all retirement/drain ownership inside the client; no
+  partial result contains a caller-owned resource.
 - A follow closes cleanly on a declared terminal event, or independently
   on caller `Close`, lag, context-driven consumer exit, or client death.
   Its branch may remain active after the immediate response branch
@@ -885,8 +895,8 @@ Required concurrency and lifecycle cases include:
   subscriptions;
 - `Close` before and after clean/failing terminal transitions, preserving
   the first result while releasing every queue charge;
-- caller mutation of `FollowSpec`, `ListSpec`, and subscription option
-  slices after admission without changed routing or data races;
+- caller mutation of `SubSpec`, `FollowSpec`, and `ListSpec` slices after
+  registration without changed routing or data races;
 - list completion, list failure, partial write, and client death before
   the initial response, with no partial handle or impossible drain;
 - concurrent Close, EOF, protocol failure, Ping timeout, write failure,
@@ -915,9 +925,10 @@ package-level godoc `Example`:
 - **Application-owned reconnect:** `Done`/`Err` drive a bounded outer dial
   loop. `ErrPingTimeout`, EOF, or another client-terminal cause creates a
   new client generation and always requires a fresh snapshot.
-- **Async completion:** request an ActionID-specific follow subscription
-  as part of `Do`; the client installs it before writing. The caller never
-  manufactures an ActionID or races a separate subscription against send.
+- **Async completion:** dispatch through `DoFollow` to receive the
+  ActionID-specific follow subscription with the response; the client
+  installs it before writing. The caller never manufactures an ActionID or
+  races a separate subscription against send.
 - **Hook-style handling:** iterate `Subscription.Next`/`All` or run the
   packaged blocking loop `Consume(ctx, handler)`. The handler runs outside
   the read loop and may safely call `Do`; hidden callback goroutines are
@@ -973,14 +984,8 @@ type FollowSpec struct {
     BufferItems      int
 }
 
-type DoResult struct {
-    Response Response
-    ActionID string
-    Follow   *Subscription
-}
-
-func (c *Client) Do(ctx context.Context, action Action, opts ...DoOption) (DoResult, error)
-func WithFollow(spec FollowSpec) DoOption
+func (c *Client) Do(ctx context.Context, action Action) (Response, error)
+func (c *Client) DoFollow(ctx context.Context, action Action, spec FollowSpec) (Response, *Subscription, error)
 
 type SubSpec struct {
     Events      []string // optional; empty receives every unsolicited event
@@ -1017,12 +1022,12 @@ func (c *Client) Err() error
 func (c *Client) Close() error
 ```
 
-`DoResult` carries the immediate response, assigned ActionID, and optional
-atomically registered follow subscription only when `Do` returns nil
-error. On every non-nil error, no caller-owned follow escapes; the client
-closes the provisional handle and retains any required retirement/drain
-state internally. `StartList` likewise never returns a partial `List` with
-an error. Keepalive disabling is explicit through
+`DoFollow` returns the atomically registered follow subscription only
+with a nil error. On every non-nil error the subscription is nil and no
+caller-owned follow escapes; the client closes the provisional handle and
+retains any required retirement/drain state internally. `StartList`
+likewise never returns a partial `List` with an error. Keepalive disabling
+is explicit through
 `KeepaliveConfig.Disabled`; the zero-value configuration selects the
 enabled defaults.
 
