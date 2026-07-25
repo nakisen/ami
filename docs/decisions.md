@@ -797,3 +797,100 @@ demand: a retry-safety recipe section (definitely-not-sent versus
 may-have-executed) and an amitest-centered consumer-testing guide. The
 godoc contracts already state those facts; both items are
 discoverability polish, not missing information.
+
+## 2026-07-25 — Pre-tag surface review: the v0 shape reopens
+
+The preceding ruling that the v0 public API "is complete and gains no
+new surface" is superseded for API *shape*. It was reached while deciding
+whether to add a hook mechanism, and that answer stands; it was never a
+general freeze. The library has no tag and no consumers, so every
+reshaping recorded below is free today and either impossible or a major
+version tomorrow. That asymmetry is the whole reason this review runs
+before the tag: exporting a symbol later is a compatible addition,
+retracting one is not.
+
+What did not reopen: `MustAction`, `MatchAll`, an asynchronous `OnEvent`
+registry, predicate filters, lenient conversion helpers,
+library-internal auto-reconnect, `Redialer`, and `amix` all stay
+declined or deferred on their recorded rationale. The distinction that
+survived the review is the one that declined the hook layer — hide
+mechanism, never consequences. Every surface added below is a
+constructor, a predicate, or a read-only gauge; none of them is a
+dispatcher, and none of them moves an error away from its address.
+
+The review left the internal layering (`internal/wire` →
+`internal/demux` → session) untouched and found three defects in the
+public shape:
+
+- Two abstraction levels in one package: the framing layer is exported
+  beside the session that exists to use it.
+- Three configuration idioms side by side — variadic options
+  (`Subscribe`), an option wrapping a struct (`WithFollow`), and a
+  positional spec struct (`StartList`) — in a library whose own stated
+  principle is declarative data over user functions.
+- A consumer testability gap: `Message` has no exported constructor, so
+  an application's pure event-folding function cannot be unit tested
+  without a real socket, and `amitest` deliberately does not import the
+  root package to supply one.
+
+Four questions the review left open are now closed.
+
+**The framing layer withdraws from the public surface.** `Conn` is
+exported today but unreachable as a component: no path hands a `*Conn`
+to a `Client`, so the documented rationale — advanced users building a
+different session layer — is not in fact satisfied, while the cost is
+that the least evolvable third of the public surface freezes at the tag.
+Making it a genuine component was the considered alternative and is
+rejected: it forces `Config` to split, because `Address`, `TLS`,
+`DialContext`, and `Limits.Wire` are meaningless on a
+bring-your-own-connection path, and it creates a second way to read the
+banner — growing the surface in the name of shrinking it. The code stays
+in the root package, since it produces and consumes `ami.Message` and
+`ami.Action` and a separate `internal` package would have to import the
+root and close a cycle; the type and its methods become unexported.
+`WireLimits` stays exported because `Limits.Wire` must remain settable.
+
+**A known-list table ships only verified rows.** `ListSpecFor` answers
+the question the library already treats as `ListSpec`'s reason to exist
+— prior art records heuristic completion detection as a dead end — but
+which the library currently makes every consumer answer by hand. The
+table's only value is being more trustworthy than what the consumer
+would write, and a guessed row destroys exactly that, so a row enters
+only with a note naming where its completion event is produced and over
+which Asterisk range it was verified. The first release ships the rows
+this repository already has evidence for; the remaining candidates wait
+in a verification queue. Reporting an action as unknown is the honest
+way to say so and is part of the contract, which also makes later rows a
+compatible addition. The table may be incomplete; it may not be wrong.
+
+**`Client.Stats()` ships in v0.** Without it, v0 tags with the
+demultiplexer's counter accessor as dead code — nothing calls it — and
+with no gauge surface at all. The first question after `ErrLagged` is
+how close to the bound the consumer was, and today's only answer is a
+`slog` timeline, which is a sequence of events, not a level; queue
+bounds stay sized by the documented poll-interval estimate instead of
+evidence. Adding the surface later would be compatible, but its shape
+decides whether high-water tracking needs new state in the machine, and
+that question has to close before the tag. High-water fields are
+deliberately out of this round.
+
+**`ListSpec.CountFields` obeys the matcher limits.** Matcher and
+completion names are bounded by `Limits.MaxMatcherNames` and
+`MaxMatcherBytes`; declared count fields are scanned on the same read
+loop for the same reason, yet were bounded by two hardcoded constants
+under a tighter, unrelated policy. They now share the matcher limits, so
+one policy governs everything the read loop scans against a caller's
+declaration. A second pair of knobs is rejected: it manages one
+constraint under two names and adds two more tunables to a limits pair
+that already carries twenty-six.
+
+The work lands one slice per commit, code and tests and documentation
+together: withdraw the framing layer; replace the subscription and
+dispatch options with declared specs; split `Do` by whether the caller
+adopts a follow; let consumers construct events and responses; ship the
+verified list contracts; match protocol identifiers through one exported
+predicate; surface the machine's accounting as client stats; anchor the
+default limits in one exported value; read committed terminal causes
+without the session lock. The specs slice precedes the `Do` split
+because they share one documentation pass over the same API sketch. The
+rest are independent, and each appends its own section here.
