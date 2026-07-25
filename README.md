@@ -28,7 +28,10 @@ evidence. The short version of what this library does differently:
   `List` handles with `Next(ctx)` and `All(ctx) iter.Seq2[Event, error]`.
 - **Nothing is silently dropped.** Every queue is bounded by count and
   bytes; overflow closes that subscription with `ErrLagged` instead of
-  discarding events behind your back.
+  discarding events behind your back. What the design absorbs on purpose —
+  unmatched events, quarantined late traffic — is counted and readable
+  through `Client.Stats()`, alongside gauges for how close the bounded
+  state is to its limits.
 - **Honest action outcomes.** Errors distinguish definitely-not-sent from
   may-have-executed (`MayHaveExecuted()`, `ErrOutcomeUnknown`); the
   library never retries an action.

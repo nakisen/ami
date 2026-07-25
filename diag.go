@@ -48,6 +48,15 @@ func (d *diagnostics) info(msg string, args ...any) {
 	}
 }
 
+// dropped reports how many diagnostics the bounded queue discarded; safe
+// on the nil (silent) instance, which queues nothing.
+func (d *diagnostics) dropped() uint64 {
+	if d == nil {
+		return 0
+	}
+	return d.drops.Load()
+}
+
 // run drains the queue until the client context ends, then flushes
 // what is buffered and reports the drop count once.
 func (d *diagnostics) run(ctx context.Context) {

@@ -625,6 +625,37 @@ operating-system TCP keepalive.
   Applications use `Done`/`Err`, create a new client under bounded
   backoff, and start a fresh snapshot/reconciliation generation.
 
+### Observability
+
+Two instruments, deliberately different in kind. `Config.Logger` is a
+timeline: it says what happened and when, through a bounded queue whose
+handler never runs on the read loop. `Client.Stats()` is a level: it
+answers how much and how close to the bound, at one consistent point taken
+under the session lock. A timeline cannot answer "how full was the queue",
+and a gauge cannot answer "in what order did this happen", so neither
+replaces the other.
+
+- Both carry allowlisted metadata only — counts, names, durations, reason
+  codes — and never message contents, field values, credentials, or
+  endpoints. `Stats` is entirely numeric.
+- The honest-failure rules are what make the levels necessary: after
+  `ErrLagged` the first operational question is how close to the bound the
+  consumer was, and `SubSpec.BufferItems` is otherwise sized by the
+  documented poll-gap estimate with nothing to check it against.
+- Monotonic counters record what the design absorbs on purpose so it is
+  never silent: unmatched events, quarantined traffic held by retirement
+  and drain records, permanently discarded late list traffic, and dropped
+  diagnostics. Gauges report live branch, pending, retirement, and charged
+  byte state against the limits that bound them.
+- `Stats` is diagnostics: no library behavior reads it, a counter never
+  implies a delivery guarantee, and a terminated client keeps answering so
+  the accounting can still explain what the session did. High-water marks
+  are deliberately absent from v0 — they would require new state in the
+  machine, and the shape above does not foreclose adding them.
+- The machine exposes this as one read-only snapshot call, so the session
+  publishes a self-consistent view without a second traversal and without
+  the accounting leaking mutable internals.
+
 ## Error model
 
 Sentinel errors support `errors.Is`:
@@ -1070,6 +1101,8 @@ func (c *Client) Banner() string
 func (c *Client) Done() <-chan struct{}
 func (c *Client) Err() error
 func (c *Client) Close() error
+
+func (c *Client) Stats() Stats
 ```
 
 `DoFollow` returns the atomically registered follow subscription only

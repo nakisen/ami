@@ -137,6 +137,20 @@ func TestUnfilteredFlood(t *testing.T) {
 		t.Fatalf("unmatched counter %d, want %d", got, unmatchedExpected)
 	}
 	wantAggregates(t, m, 0, 0)
+
+	// The session publishes this accounting through Client.Stats, so the
+	// snapshot must agree with the counters and the aggregates it is taken
+	// beside, and must report the branches still held.
+	snap := m.Snapshot()
+	if snap.Counters != m.Counters() {
+		t.Fatalf("Snapshot counters = %+v, want %+v", snap.Counters, m.Counters())
+	}
+	if snap.SubscriptionBytes != 0 || snap.ListBytes != 0 {
+		t.Fatalf("Snapshot bytes = (%d, %d), want the drained aggregates (0, 0)", snap.SubscriptionBytes, snap.ListBytes)
+	}
+	if snap.Subscriptions != 2 || snap.Lists != 0 || snap.Pending != 0 || snap.Retirements != 0 {
+		t.Fatalf("Snapshot gauges = %+v, want the two registered subscriptions and nothing else", snap)
+	}
 }
 
 // Routing cost benchmarks — the headroom evidence for the flood

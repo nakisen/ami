@@ -1191,3 +1191,47 @@ claim: a known action may still be absent, renamed, or permission-gated on
 a given server, and design.md's `amix` section records that this table
 inherits none of `amix`'s provenance questions, since it contains no
 generated code and no Asterisk XML input.
+
+## 2026-07-25 — The machine's accounting surfaces as client stats
+
+`Client.Stats()` returns four monotonic counters — unmatched, quarantined,
+late list discards, dropped diagnostics — and six gauges: subscriptions,
+lists, pending actions, retirement records, and the client-wide charged
+subscription and list bytes.
+
+Without it, v0 would tag with `demux.Machine.Counters()` called from
+nowhere and no level instrument at all. The counters already existed
+because the design absorbs traffic on purpose and refuses to do it
+silently; they simply had no way out of the package. And the gauges answer
+the question the honest-failure rules create: after `ErrLagged` an operator
+asks how close to the bound the consumer was, and `SubSpec.BufferItems` is
+otherwise sized by the documented poll-gap estimate with nothing to check
+it against. `Config.Logger` cannot answer either question — a timeline says
+what happened, not what the level is.
+
+Adding this later would have been compatible, which is why it was an open
+question rather than an obvious inclusion. It ships now because its shape
+decides whether high-water tracking needs new state in the machine. High-
+water fields stay out of this round; the struct's flat, all-numeric shape
+leaves room to add them.
+
+The machine gained one read-only `Snapshot` call rather than a set of
+getters, so the session publishes a self-consistent view in a single
+traversal under the lock it already holds, and the internal counter type
+never appears in the public API — `Stats` is a flat root-package struct
+copied from the snapshot. `Counters` stays for the demux tests that assert
+against it.
+
+Two behaviors the tests pin are worth recording because they look like bugs
+until stated. Unmatched events cost no queue bytes, which is the accounting
+claim the unfiltered-flood conformance target rests on, so a busy session
+shows a large `Unmatched` with zero charge. And a branch's bookkeeping
+survives termination until its handle is closed — the machine retains a
+terminal branch so its committed result stays observable — so `Stats` after
+`Done` still counts an unclosed subscription, and the count only drops when
+the consumer closes it. A terminated client answering at all is
+deliberate: the accounting is how one explains afterwards what the session
+did.
+
+`DiagDrops` reads the diagnostics queue's atomic drop counter and is zero
+when no `Logger` is configured, because the silent default queues nothing.

@@ -134,6 +134,23 @@ func (m *Machine[T]) Counters() Counters {
 	return m.ctr
 }
 
+// Snapshot returns the machine's accounting at this linearization point:
+// the monotonic discard counters plus the live gauges the invariant
+// checks already maintain. It reads only — no state changes, no clock is
+// consulted — so the session needs nothing beyond the lock it already
+// holds to publish a self-consistent view.
+func (m *Machine[T]) Snapshot() Snapshot {
+	return Snapshot{
+		Counters:          m.ctr,
+		Subscriptions:     len(m.subByID) + len(m.folByID),
+		Lists:             len(m.listByID),
+		Pending:           m.publicPending,
+		Retirements:       len(m.records),
+		SubscriptionBytes: m.subBytes,
+		ListBytes:         m.listBytes,
+	}
+}
+
 // Kill terminates the machine with a session-supplied cause: every
 // uncompleted pending is completed with Delivered false, every active
 // branch commits ClientDead and discards its queue, and every

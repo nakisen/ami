@@ -235,3 +235,37 @@ type Counters struct {
 	// path through the machine.
 	Unmatched uint64
 }
+
+// Snapshot is a read-only view of the machine's accounting: the monotonic
+// discard counters plus the current gauges. It is what the session
+// publishes as client statistics, and it is diagnostics only — a gauge
+// never implies a delivery guarantee.
+type Snapshot struct {
+	Counters
+
+	// Subscriptions counts the subscription-family branches the machine
+	// holds: ordinary subscriptions and follow branches alike, including a
+	// follow still provisional on its admitted request and a terminal
+	// branch whose handle has not yet been closed.
+	Subscriptions int
+
+	// Lists counts the list branches the machine holds, on the same
+	// terms.
+	Lists int
+
+	// Pending counts admitted public actions that have not completed. The
+	// reserved internal keepalive slot is deliberately excluded: it is
+	// library-owned and always at most one.
+	Pending int
+
+	// Retirements counts live outcome-unknown retirement and
+	// abandoned-list drain records. Admission-held reservations are not
+	// records and are not counted here.
+	Retirements int
+
+	// SubscriptionBytes and ListBytes are the client-wide charged bytes
+	// the aggregate accounting maintains: queued subscription-family
+	// bytes, and retained list bytes including stored completion events.
+	SubscriptionBytes int
+	ListBytes         int
+}
