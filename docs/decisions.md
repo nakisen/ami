@@ -948,3 +948,43 @@ and records the login path's deliberate absence of an outcome-unknown
 verdict. The `Conn` rows in the API sketch and the repository layout are
 gone, and the limit anchors now name the framing layer while still
 pointing at the 2026-07-16 log entry written under the old name.
+
+## 2026-07-25 — Subscriptions are declared, not configured by options
+
+`Subscribe` takes one `SubSpec` value. `SubOption`, `MatchEvents`, and
+`Buffer` are gone.
+
+The library's own principle for read-loop routing is declarative
+event-name data rather than user functions, and the options contradicted
+it in form while obeying it in substance: `MatchEvents` was a function
+whose entire body copied its arguments into a struct so that no function
+would reach the read loop. A spec states the same thing as data, which a
+test can construct, print, and compare. It also collapses three idioms
+into one — variadic options for subscriptions, an option wrapping a struct
+for follows, a positional struct for lists — leaving the surface with a
+single configuration shape shared by `SubSpec`, `FollowSpec`, `ListSpec`,
+`Config`, `Limits`, and `KeepaliveConfig`.
+
+The change fixes an inconsistency the option could not express.
+`Buffer(0)` was an error, while a zero field means "use the documented
+default" everywhere else in the configuration surface, including `Limits`,
+`WireLimits`, and `KeepaliveConfig`. `SubSpec.BufferItems` now resolves
+zero to `Limits.SubscriptionQueueItems` and rejects only a negative value,
+which is also what makes the zero `SubSpec` the correct spelling of the
+plain case: subscribe to everything with the configured bounds.
+
+Options did carry one real guarantee — they copied the caller's slice at
+call time, so later mutation could not change routing. That guarantee now
+rests where it always actually lived: registration folds the declared
+names into the router's own set, and the machine never retains the
+caller's slice. A new test mutates the spec's slice immediately after
+`Subscribe` returns and asserts that routing is unchanged, so the property
+is pinned at the new entry point rather than inferred from the deleted
+option's body. A second test pins zero-selects-the-default from both
+spellings by queueing exactly the configured bound and then overflowing
+it.
+
+design.md's explicit-subscriptions section records the one-idiom rule and
+why the options were dropped; the API sketch carries `SubSpec` in place of
+the option constructors. `FollowSpec` still arrives through the
+`WithFollow` option, which the next slice removes along with `DoResult`.

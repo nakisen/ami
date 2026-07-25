@@ -17,33 +17,21 @@ var (
 	errAdapterUsed        = errors.New("ami: single-use adapter already consumed")
 )
 
-// A SubOption configures one subscription.
-type SubOption func(*subOptions)
+// A SubSpec declares one subscription. It is data, not behavior: no user
+// function runs on the read loop. The zero value subscribes to every
+// unsolicited event with the configured default queue bounds.
+type SubSpec struct {
+	// Events restricts delivery to the named events, matched
+	// ASCII-case-insensitively. Empty receives every unsolicited event.
+	Events []string
 
-type subOptions struct {
-	names []string
-	items int
-}
-
-// MatchEvents restricts the subscription to the named events, matched
-// case-insensitively. Without it, the subscription receives every
-// unsolicited event.
-func MatchEvents(names ...string) SubOption {
-	ns := make([]string, len(names))
-	copy(ns, names)
-	return func(o *subOptions) {
-		o.names = append(o.names, ns...)
-	}
-}
-
-// Buffer overrides the subscription queue's item bound; the byte bound
-// stays at Limits.SubscriptionQueueBytes. Size it to the consumer's
-// worst pull gap times the matched event rate: overflow closes the
-// subscription with ErrLagged rather than dropping events silently.
-func Buffer(items int) SubOption {
-	return func(o *subOptions) {
-		o.items = items
-	}
+	// BufferItems overrides the subscription queue's item bound; zero
+	// selects Limits.SubscriptionQueueItems and negative is rejected. The
+	// byte bound always stays at Limits.SubscriptionQueueBytes. Size the
+	// items to the consumer's worst pull gap times the matched event
+	// rate: overflow closes the subscription with ErrLagged rather than
+	// dropping events silently.
+	BufferItems int
 }
 
 // A Subscription is one explicit, bounded event stream: ordinary
@@ -59,31 +47,31 @@ type Subscription struct {
 	adapted atomic.Bool // All/Consume are single-use
 }
 
-// Subscribe validates opts, registers the subscription eagerly — there
+// Subscribe validates spec, registers the subscription eagerly — there
 // is no library-created delivery gap after it returns — and transfers
-// ownership to the caller, who must Close it.
-func (c *Client) Subscribe(opts ...SubOption) (*Subscription, error) {
-	o := subOptions{items: c.sess.subItems}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&o)
-		}
+// ownership to the caller, who must Close it. Registration folds the
+// declared names into the router's own set, so mutating spec afterwards
+// cannot change what this subscription matches.
+func (c *Client) Subscribe(spec SubSpec) (*Subscription, error) {
+	if spec.BufferItems < 0 {
+		return nil, errors.New("ami: SubSpec.BufferItems is negative")
 	}
-	if o.items <= 0 {
-		return nil, errors.New("ami: Buffer requires a positive item bound")
+	items := spec.BufferItems
+	if items == 0 {
+		items = c.sess.subItems
 	}
-	caps := demux.Caps{Items: o.items, Bytes: c.sess.subBytes}
+	caps := demux.Caps{Items: items, Bytes: c.sess.subBytes}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.terminated {
 		return nil, ErrClosed
 	}
-	id, err := c.machine.Subscribe(demux.Matcher{Events: o.names}, caps)
+	id, err := c.machine.Subscribe(demux.Matcher{Events: spec.Events}, caps)
 	if err != nil {
 		return nil, subscribeError(err)
 	}
-	c.diag.info("subscription registered", "names", len(o.names))
+	c.diag.info("subscription registered", "names", len(spec.Events))
 	return &Subscription{c: c, b: c.registerBranchLocked(id)}, nil
 }
 

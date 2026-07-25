@@ -44,7 +44,7 @@ func (r *Router) Handle(name string, fn func(ami.Event)) {
 }
 
 // Names returns the registered event names, ready to become the
-// subscription's declarative MatchEvents filter: events without a
+// subscription's declarative SubSpec.Events filter: events without a
 // handler are then never queued at all.
 func (r *Router) Names() []string {
 	return slices.Collect(maps.Keys(r.handlers))
@@ -94,7 +94,7 @@ func main() {
 		fmt.Printf("peer %s -> %s\n", e.Get("Peer"), e.Get("PeerStatus"))
 	})
 
-	sub, err := client.Subscribe(ami.MatchEvents(router.Names()...))
+	sub, err := client.Subscribe(ami.SubSpec{Events: router.Names()})
 	if err != nil {
 		log.Fatalf("subscribe: %v", err)
 	}

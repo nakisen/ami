@@ -80,7 +80,7 @@ func run(ctx context.Context, client *ami.Client) error {
 		// Subscribe before opening the mask (first pass) and before the
 		// fresh snapshot (recovery pass), so no live event falls between
 		// snapshot and stream.
-		sub, err := client.Subscribe(ami.MatchEvents(names...))
+		sub, err := client.Subscribe(ami.SubSpec{Events: names})
 		if err != nil {
 			return err
 		}

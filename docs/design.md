@@ -381,9 +381,19 @@ aggregate limits, registers eagerly, and returns
   once. Terminal semantics otherwise mirror `Next`. An asynchronous
   `OnEvent` registry is not in v0.
 - Ordinary subscription filters are declarative event-name data
-  (`MatchEvents` and bounded combinations). ActionID-specific follow and
-  list routing is established atomically through `FollowSpec` and
+  (`SubSpec.Events` and bounded combinations). ActionID-specific follow
+  and list routing is established atomically through `FollowSpec` and
   `ListSpec`; arbitrary predicates do not execute on the read loop.
+- Every registration is declared through a spec struct, not a functional
+  option: `SubSpec`, `FollowSpec`, `ListSpec`, `Config`, `Limits`, and
+  `KeepaliveConfig` are the one configuration idiom on the surface. Zero
+  fields select documented defaults, so a zero spec is the plain case, and
+  a spec is inert data a test can build and print. Options were the
+  original idiom for subscriptions and follows; they contradicted the
+  library's own declarative-data principle by making configuration a
+  function, and their only real guarantee — copying at call time — is
+  provided instead by folding the declaration into the router's own set at
+  registration.
 - Every subscription has bounded item and byte capacity, and the client
   has aggregate subscription count and retained-byte limits. Aggregate
   accounting may overcount conservatively but never undercounts retained
@@ -972,9 +982,12 @@ type DoResult struct {
 func (c *Client) Do(ctx context.Context, action Action, opts ...DoOption) (DoResult, error)
 func WithFollow(spec FollowSpec) DoOption
 
-func (c *Client) Subscribe(opts ...SubOption) (*Subscription, error)
-func MatchEvents(names ...string) SubOption
-func Buffer(items int) SubOption
+type SubSpec struct {
+    Events      []string // optional; empty receives every unsolicited event
+    BufferItems int      // optional; zero selects Limits.SubscriptionQueueItems
+}
+
+func (c *Client) Subscribe(spec SubSpec) (*Subscription, error)
 
 func (s *Subscription) Next(ctx context.Context) (Event, error)
 func (s *Subscription) All(ctx context.Context) iter.Seq2[Event, error]

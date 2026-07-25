@@ -224,9 +224,9 @@ func TestSnapshotPlusLiveWallboard(t *testing.T) {
 	// real Asterisk alike.
 	c := dialServer(t, srv, func(cfg *ami.Config) { cfg.EventMask = "on" })
 
-	sub, err := c.Subscribe(ami.MatchEvents("QueueMemberStatus"))
+	sub, err := c.Subscribe(ami.SubSpec{Events: []string{"QueueMemberStatus"}})
 	if err != nil {
-		t.Fatalf("Subscribe() error = %v", err)
+		t.Fatalf("Subscribe(ami.SubSpec{}) error = %v", err)
 	}
 	defer sub.Close()
 
@@ -268,9 +268,9 @@ func TestSnapshotPlusLiveWallboard(t *testing.T) {
 func TestEventMaskGatesBroadcasts(t *testing.T) {
 	srv := newServer(t, amitest.Config{})
 	c := dialServer(t, srv, nil) // zero config: Events: off
-	sub, err := c.Subscribe(ami.MatchEvents("PeerStatus"))
+	sub, err := c.Subscribe(ami.SubSpec{Events: []string{"PeerStatus"}})
 	if err != nil {
-		t.Fatalf("Subscribe() error = %v", err)
+		t.Fatalf("Subscribe(ami.SubSpec{}) error = %v", err)
 	}
 	defer sub.Close()
 
@@ -330,9 +330,9 @@ func TestEventMaskVocabulary(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			srv := newServer(t, amitest.Config{})
 			c := dialServer(t, srv, nil)
-			sub, err := c.Subscribe(ami.MatchEvents("MaskProbe"))
+			sub, err := c.Subscribe(ami.SubSpec{Events: []string{"MaskProbe"}})
 			if err != nil {
-				t.Fatalf("Subscribe() error = %v", err)
+				t.Fatalf("Subscribe(ami.SubSpec{}) error = %v", err)
 			}
 			defer sub.Close()
 
@@ -418,9 +418,9 @@ func TestCustomEventsHandlerCanSetEventMask(t *testing.T) {
 		call.Respond("Success", "Events", state, "Handler", "custom")
 	})
 	c := dialServer(t, srv, nil)
-	sub, err := c.Subscribe(ami.MatchEvents("CustomMaskProbe"))
+	sub, err := c.Subscribe(ami.SubSpec{Events: []string{"CustomMaskProbe"}})
 	if err != nil {
-		t.Fatalf("Subscribe() error = %v", err)
+		t.Fatalf("Subscribe(ami.SubSpec{}) error = %v", err)
 	}
 	defer sub.Close()
 

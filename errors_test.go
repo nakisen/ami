@@ -126,7 +126,7 @@ func TestDispatchRejectionMappings(t *testing.T) {
 	}
 
 	// Subscription matcher limit.
-	if _, err := c.Subscribe(MatchEvents("a", "b", "c")); err == nil || !strings.Contains(err.Error(), "matcher") {
+	if _, err := c.Subscribe(SubSpec{Events: []string{"a", "b", "c"}}); err == nil || !strings.Contains(err.Error(), "matcher") {
 		t.Fatalf("Subscribe with an oversized matcher = %v", err)
 	}
 }

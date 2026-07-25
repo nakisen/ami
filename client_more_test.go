@@ -198,7 +198,7 @@ func TestDiagnosticsEmitAllowlistedMetadataOnly(t *testing.T) {
 		}
 		<-handshake
 
-		sub, err := c.Subscribe(MatchEvents("SecretEvent"))
+		sub, err := c.Subscribe(SubSpec{Events: []string{"SecretEvent"}})
 		if err != nil {
 			t.Fatal(err)
 		}

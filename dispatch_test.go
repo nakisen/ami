@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -185,7 +186,7 @@ func TestDoWriteAdmissionTimeout(t *testing.T) {
 
 func TestSubscribeDeliveryAndFiltering(t *testing.T) {
 	c, s := dialTest(t, nil)
-	sub, err := c.Subscribe(MatchEvents("QueueMemberStatus"))
+	sub, err := c.Subscribe(SubSpec{Events: []string{"QueueMemberStatus"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +208,7 @@ func TestSubscribeDeliveryAndFiltering(t *testing.T) {
 
 func TestSubscribeNextContextCancelKeepsSubscription(t *testing.T) {
 	c, s := dialTest(t, nil)
-	sub, err := c.Subscribe()
+	sub, err := c.Subscribe(SubSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,12 +228,12 @@ func TestSubscribeNextContextCancelKeepsSubscription(t *testing.T) {
 
 func TestSubscriptionLag(t *testing.T) {
 	c, s := dialTest(t, nil)
-	sub, err := c.Subscribe(Buffer(2))
+	sub, err := c.Subscribe(SubSpec{BufferItems: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sub.Close()
-	healthy, err := c.Subscribe(MatchEvents("Newchannel"))
+	healthy, err := c.Subscribe(SubSpec{Events: []string{"Newchannel"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +262,7 @@ func TestSubscriptionLag(t *testing.T) {
 
 func TestSubscriptionCloseDiscards(t *testing.T) {
 	c, s := dialTest(t, nil)
-	sub, err := c.Subscribe()
+	sub, err := c.Subscribe(SubSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +285,7 @@ func TestSubscriptionCloseDiscards(t *testing.T) {
 
 func TestConsume(t *testing.T) {
 	c, s := dialTest(t, nil)
-	sub, err := c.Subscribe(MatchEvents("Newstate"))
+	sub, err := c.Subscribe(SubSpec{Events: []string{"Newstate"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +317,7 @@ func TestConsume(t *testing.T) {
 
 func TestAllClosesOnBreak(t *testing.T) {
 	c, s := dialTest(t, nil)
-	sub, err := c.Subscribe()
+	sub, err := c.Subscribe(SubSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +345,7 @@ func TestAllClosesOnBreak(t *testing.T) {
 func TestAdaptersHoldConsumerLease(t *testing.T) {
 	t.Run("subscription all", func(t *testing.T) {
 		c, s := dialTest(t, nil)
-		sub, err := c.Subscribe(MatchEvents("Newchannel"))
+		sub, err := c.Subscribe(SubSpec{Events: []string{"Newchannel"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -371,7 +372,7 @@ func TestAdaptersHoldConsumerLease(t *testing.T) {
 
 	t.Run("subscription consume", func(t *testing.T) {
 		c, s := dialTest(t, nil)
-		sub, err := c.Subscribe(MatchEvents("Newchannel"))
+		sub, err := c.Subscribe(SubSpec{Events: []string{"Newchannel"}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -420,7 +421,7 @@ func TestAdaptersHoldConsumerLease(t *testing.T) {
 
 func TestDoWithFollow(t *testing.T) {
 	c, s := dialTest(t, nil)
-	watcher, err := c.Subscribe()
+	watcher, err := c.Subscribe(SubSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +546,7 @@ func TestStartListHappyPath(t *testing.T) {
 
 func TestStartListItemsNotDeliveredToSubscriptions(t *testing.T) {
 	c, s := dialTest(t, nil)
-	watcher, err := c.Subscribe()
+	watcher, err := c.Subscribe(SubSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,7 +728,7 @@ func TestStartListCancelled(t *testing.T) {
 
 func TestListCloseWhileStreamingDrains(t *testing.T) {
 	c, s := dialTest(t, nil)
-	watcher, err := c.Subscribe()
+	watcher, err := c.Subscribe(SubSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -842,7 +843,7 @@ func TestCloseWakesParkedNext(t *testing.T) {
 	t.Run("subscription", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			c, _ := dialTest(t, nil)
-			sub, err := c.Subscribe()
+			sub, err := c.Subscribe(SubSpec{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -994,18 +995,81 @@ func TestSubscribeValidationAndLimits(t *testing.T) {
 	c, _ := dialTest(t, func(cfg *Config) {
 		cfg.Limits.MaxSubscriptions = 1
 	})
-	if _, err := c.Subscribe(Buffer(-1)); err == nil {
-		t.Fatal("Subscribe(Buffer(-1)) succeeded")
+	if _, err := c.Subscribe(SubSpec{BufferItems: -1}); err == nil {
+		t.Fatal("Subscribe(SubSpec{BufferItems: -1}) succeeded")
 	}
-	sub, err := c.Subscribe()
+	sub, err := c.Subscribe(SubSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Subscribe(); err == nil || !strings.Contains(err.Error(), "subscription limit") {
-		t.Fatalf("Subscribe() over the limit = %v", err)
+	if _, err := c.Subscribe(SubSpec{}); err == nil || !strings.Contains(err.Error(), "subscription limit") {
+		t.Fatalf("Subscribe(SubSpec{}) over the limit = %v", err)
 	}
 	sub.Close()
-	if _, err := c.Subscribe(); err != nil {
-		t.Fatalf("Subscribe() after Close = %v, want the slot released", err)
+	if _, err := c.Subscribe(SubSpec{}); err != nil {
+		t.Fatalf("Subscribe(SubSpec{}) after Close = %v, want the slot released", err)
+	}
+}
+
+// TestSubSpecZeroSelectsDefaults pins the zero-value rule the rest of the
+// configuration surface already follows: an unset BufferItems resolves to
+// Limits.SubscriptionQueueItems instead of being rejected, which the
+// superseded Buffer option could not express.
+func TestSubSpecZeroSelectsDefaults(t *testing.T) {
+	for name, spec := range map[string]SubSpec{
+		"zero spec":           {},
+		"explicit zero items": {BufferItems: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, s := dialTest(t, func(cfg *Config) {
+				cfg.Limits.SubscriptionQueueItems = 3
+			})
+			sub, err := c.Subscribe(spec)
+			if err != nil {
+				t.Fatalf("Subscribe(%+v) error = %v", spec, err)
+			}
+			defer sub.Close()
+			// The resolved bound is exactly the configured default: three
+			// events queue, and the fourth overflows.
+			for i := range 3 {
+				s.event("Newchannel", "Seq", strconv.Itoa(i))
+			}
+			s.sync(c)
+			if err := sub.Err(); err != nil {
+				t.Fatalf("Err() after 3 queued events = %v, want the configured bound of 3", err)
+			}
+			s.event("Newchannel", "Seq", "3")
+			s.sync(c)
+			if err := sub.Err(); !errors.Is(err, ErrLagged) {
+				t.Fatalf("Err() after 4 queued events = %v, want ErrLagged at the configured bound", err)
+			}
+		})
+	}
+}
+
+// TestSubSpecEventsCopiedAtRegistration pins the guarantee the deleted
+// MatchEvents option provided by copying at call time: the declaration is
+// folded into the router's own set, so later mutation of the caller's
+// slice cannot change what the subscription matches.
+func TestSubSpecEventsCopiedAtRegistration(t *testing.T) {
+	c, s := dialTest(t, nil)
+	names := []string{"Newchannel"}
+	sub, err := c.Subscribe(SubSpec{Events: names})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	names[0] = "Newstate"
+
+	s.event("Newstate", "Channel", "PJSIP/synthetic-0001")
+	s.event("Newchannel", "Channel", "PJSIP/synthetic-0002")
+	s.sync(c)
+
+	ev, err := sub.Next(context.Background())
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if got := ev.Name(); got != "Newchannel" {
+		t.Fatalf("Next() delivered %q, want Newchannel: the mutated slice changed routing", got)
 	}
 }

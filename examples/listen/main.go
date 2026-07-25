@@ -51,7 +51,7 @@ func main() {
 	// The gap-minimizing startup order: the zero Config logs in with
 	// events off, so register the subscription first and only then open
 	// the server-side mask with an Events action.
-	sub, err := client.Subscribe()
+	sub, err := client.Subscribe(ami.SubSpec{})
 	if err != nil {
 		log.Fatalf("subscribe: %v", err)
 	}

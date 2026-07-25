@@ -414,8 +414,8 @@ func TestClientCloseLifecycle(t *testing.T) {
 		t.Fatalf("second Close() = %v", err)
 	}
 	// A closed client rejects new work with ErrClosed.
-	if _, err := c.Subscribe(); !errors.Is(err, ErrClosed) {
-		t.Fatalf("Subscribe() after Close = %v, want ErrClosed", err)
+	if _, err := c.Subscribe(SubSpec{}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Subscribe(SubSpec{}) after Close = %v, want ErrClosed", err)
 	}
 	ping, err := NewAction("Ping")
 	if err != nil {
@@ -431,7 +431,7 @@ func TestClientCloseLifecycle(t *testing.T) {
 
 func TestServerEOFTerminatesClient(t *testing.T) {
 	c, s := dialTest(t, nil)
-	sub, err := c.Subscribe()
+	sub, err := c.Subscribe(SubSpec{})
 	if err != nil {
 		t.Fatal(err)
 	}

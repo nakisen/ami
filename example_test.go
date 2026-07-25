@@ -27,7 +27,7 @@ func Example() {
 
 	// The zero Config logs in with events off: register the
 	// subscription first, then open the server-side mask.
-	sub, err := client.Subscribe(ami.MatchEvents("PeerStatus"))
+	sub, err := client.Subscribe(ami.SubSpec{Events: []string{"PeerStatus"}})
 	if err != nil {
 		log.Fatal(err)
 	}

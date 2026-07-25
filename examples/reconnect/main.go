@@ -114,7 +114,7 @@ func main() {
 // error is the consume terminal; the caller reads Client.Err for the
 // committed root cause.
 func serve(ctx context.Context, client *ami.Client) error {
-	sub, err := client.Subscribe()
+	sub, err := client.Subscribe(ami.SubSpec{})
 	if err != nil {
 		return err
 	}
