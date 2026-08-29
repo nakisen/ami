@@ -7,9 +7,9 @@ message fidelity, correlation safety, bounded resource use, honest failure
 semantics, and first-class testing — with zero runtime dependencies.
 
 > [!IMPORTANT]
-> **Pre-release.** This repository is under active development and has no
-> tagged release yet. Until the first tag, every part of the API may
-> change without notice.
+> **Pre-1.0.** Releases are tagged as v0.x. The API is complete for v0
+> and stable in shape, but under semver v0 rules it may still change
+> between minor versions; compatibility promises begin at v1.0.0.
 
 ## Why another AMI client
 

@@ -8,9 +8,10 @@ language and standard-library features may be adopted immediately.
 Consumers are expected to build with a current toolchain (the Go project
 itself supports only the two most recent releases).
 
-Current state: `go 1.27` (Go 1.27 is stable as of August 2026). The Go
-gate for the first public tag is met; no release is tagged yet, so the
-module is consumable only by commit.
+Current state: `go 1.27` (Go 1.27 is stable as of August 2026).
+Releases are semver v0.x tags cut from `main` — v0.1.0 is the first.
+Under semver v0 rules the API may change between minor versions;
+compatibility promises begin at v1.0.0.
 
 ## Asterisk / AMI versions
 
@@ -52,7 +53,7 @@ The library derives no behavioral decisions from the banner;
 `Command` output framings (pre- and post-14.2) are supported by the
 parser.
 
-## Support policy (pre-release)
+## Support policy (pre-1.0)
 
 - Supported protocol versions: AMI 2.0.0 and newer (Asterisk 12+); only
   AMI 1.x is out of scope.

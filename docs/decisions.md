@@ -1274,3 +1274,23 @@ transition — which is where the race detector earns its keep in CI, since
 this is exactly the kind of change that a lock-free read gets subtly wrong
 — first-winner preservation against later death attempts, and a clean list
 terminal that must keep reading as nil while its queue drains.
+
+## 2026-08-29 — v0.1.0: the first public tag
+
+Go 1.27.0 shipped as a stable release, which satisfied the only gate this
+repository placed in front of tagging: the floor toolchain named by
+`go.mod` had to exist as a stable Go before any consumer could be pointed
+at a version. The rc toolchain pin was dropped the same day (CI moved to
+the stable 1.27.x line, the `toolchain go1.27rc1` directive removed), and
+v0.1.0 is cut from that state.
+
+What the tag means is deliberately narrow. It is a semver v0 tag:
+consumers get a resolvable module version and a reproducible build, and
+the API — frozen in shape since the 2026-07-25 surface refactor — is
+complete for v0, but v0 semantics still allow breaking changes between
+minor versions. Compatibility promises begin at v1.0.0 and are not
+implied here.
+
+Nothing in the module changes with the tag itself; the accompanying
+commit only rewords README and compatibility.md, which until now
+truthfully said that no release existed.
