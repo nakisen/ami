@@ -31,9 +31,9 @@ Asterisk Manager Interface (AMI). License: Apache-2.0. Root package `ami`.
 - **Zero runtime dependencies.** Only the Go standard library. Never add a
   `require` directive to `go.mod`.
 - **Track latest Go.** The floor is the newest stable Go (currently
-  `go 1.27`, `toolchain go1.27rc1`). Prefer modern standard-library APIs;
-  never lower the floor for compatibility. **No public tag before Go 1.27
-  is stable.**
+  `go 1.27`, stable since 2026-08). Prefer modern standard-library APIs;
+  never lower the floor for compatibility. **Tagging the first release is
+  an explicit maintainer decision — never tag as a side effect.**
 - **Messages are ordered field lists, never maps.** Duplicate keys are
   legal and order-significant; preserve both end to end.
 - **No user code on the read loop.** Delivery is pull-based through

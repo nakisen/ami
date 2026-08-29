@@ -8,9 +8,8 @@ semantics, and first-class testing — with zero runtime dependencies.
 
 > [!IMPORTANT]
 > **Pre-release.** This repository is under active development and has no
-> tagged release. The first tag follows the stable release of Go 1.27
-> (expected August 2026). Until then every part of the API may change
-> without notice.
+> tagged release yet. Until the first tag, every part of the API may
+> change without notice.
 
 ## Why another AMI client
 
@@ -80,8 +79,8 @@ and `-secret` point it at a real Asterisk.
 
 ## Requirements
 
-- **Go:** this library tracks the latest stable Go release. It is
-  currently developed against `go1.27rc1`; see
+- **Go:** this library tracks the latest stable Go release, currently
+  Go 1.27; see
   [docs/compatibility.md](docs/compatibility.md) for the toolchain policy.
 - **Asterisk:** supported protocol versions are AMI 2.0 and newer
   (Asterisk 12+); the planned live-integration matrix targets Asterisk

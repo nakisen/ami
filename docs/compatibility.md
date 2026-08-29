@@ -8,8 +8,8 @@ language and standard-library features may be adopted immediately.
 Consumers are expected to build with a current toolchain (the Go project
 itself supports only the two most recent releases).
 
-Current state: `go 1.27` with `toolchain go1.27rc1`. **No release is
-tagged before Go 1.27 is stable** (expected August 2026); until then the
+Current state: `go 1.27` (Go 1.27 is stable as of August 2026). The Go
+gate for the first public tag is met; no release is tagged yet, so the
 module is consumable only by commit.
 
 ## Asterisk / AMI versions

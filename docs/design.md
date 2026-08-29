@@ -841,8 +841,8 @@ only pointer counts.
 
 The floor is `go 1.27` at the first public release, under a
 README-declared policy that the library tracks the latest stable Go
-release. Until Go 1.27 is stable (expected 2026-08), development uses
-`toolchain go1.27rc1` and no public tag is published. CI runs the floor
+release. Go 1.27 is stable as of 2026-08 and development runs on the
+stable 1.27 line. CI runs the floor
 toolchain plus tip, adopts the `go fix` modernizers, and keeps the default
 `stdversion` vet check enabled.
 
