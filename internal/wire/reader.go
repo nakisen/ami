@@ -20,10 +20,22 @@ type Reader struct {
 	buf   []byte // line accumulation buffer, reused across reads
 	dirty bool   // bytes of an unreturned frame have been consumed
 
+	// afterMessage reports that a message has completed on this stream:
+	// from then on a blank line where the next message must start is
+	// inter-message padding rather than an empty message. pad counts the
+	// raw bytes of the current padding run.
+	afterMessage bool
+	pad          int
+
 	// onFrameStart fires on the reading goroutine when the first byte
 	// of a new banner or message frame is consumed — the moment Dirty
 	// transitions to true.
 	onFrameStart func()
+
+	// onPadding fires on the reading goroutine when a blank line has
+	// been discarded as inter-message padding — the moment Dirty
+	// returns to false without a frame having been returned.
+	onPadding func()
 }
 
 // NewReader returns a Reader parsing from r under lim. The caller is
@@ -69,7 +81,8 @@ func (f *frameStartReader) Read(p []byte) (int, error) {
 // no byte of the frame was consumed — an interruption at that point (for
 // example a poked read deadline) leaves the stream intact and a later
 // read can resume cleanly. A true Dirty after a failure means the frame
-// is partially consumed and framing cannot be resumed.
+// is partially consumed and framing cannot be resumed. Discarded
+// inter-message padding belongs to no frame and leaves the Reader clean.
 func (r *Reader) Dirty() bool { return r.dirty }
 
 // SetFrameStartHook registers fn to run whenever the first byte of a
@@ -77,7 +90,19 @@ func (r *Reader) Dirty() bool { return r.dirty }
 // from the stream or was already buffered. The connection layer uses
 // the hook to arm a partial-frame deadline that an idle stream — no
 // pending frame — never starts. fn runs on the reading goroutine.
+//
+// The hook cannot tell a frame from inter-message padding at its first
+// byte, so it also fires for a padding line; see SetPaddingHook.
 func (r *Reader) SetFrameStartHook(fn func()) { r.onFrameStart = fn }
+
+// SetPaddingHook registers fn to run whenever a blank line has been
+// discarded as inter-message padding: the frame its first byte started
+// never materialized, and the stream is back at a message boundary with
+// no frame pending. The connection layer uses the hook to disarm the
+// partial-frame deadline the padding armed, so padding followed by an
+// idle stream is not mistaken for a slow frame. fn runs on the reading
+// goroutine.
+func (r *Reader) SetPaddingHook(fn func()) { r.onPadding = fn }
 
 // ReadBanner reads the protocol banner line the server sends before its
 // first message and returns the line content without its terminator. The
@@ -98,13 +123,14 @@ func (r *Reader) ReadBanner() (string, error) {
 // cleanly at a message boundary and io.ErrUnexpectedEOF when it ends
 // inside a message. Any non-nil error means subsequent framing cannot be
 // trusted.
+//
+// Blank lines between messages are inter-message padding and are
+// discarded before the message starts; see readStart. A blank line
+// inside a message still ends it.
 func (r *Reader) ReadMessage() ([]Field, error) {
-	line, raw, err := r.readLine(r.lim.MaxLineBytes, ErrLineTooLong)
+	line, raw, err := r.readStart()
 	if err != nil {
 		return nil, err
-	}
-	if len(line) == 0 {
-		return nil, ErrEmptyMessage
 	}
 	key, value, err := splitField(line)
 	if err != nil {
@@ -126,8 +152,7 @@ func (r *Reader) ReadMessage() ([]Field, error) {
 			if err := charge(&m.msgBytes, raw, r.lim.MaxMessageBytes, ErrMessageTooLarge); err != nil {
 				return nil, err
 			}
-			r.dirty = false
-			return m.fields, nil
+			return r.complete(&m), nil
 		}
 		key, value, err := splitField(line)
 		if err != nil {
@@ -137,6 +162,52 @@ func (r *Reader) ReadMessage() ([]Field, error) {
 			return nil, err
 		}
 	}
+}
+
+// readStart reads the line a message starts with, first discarding any
+// inter-message padding: blank lines between a completed message and
+// the next one. Some servers terminate a message whose last value
+// already ends in a line feed, which leaves a stray blank line behind
+// the message's own terminator.
+//
+// Padding belongs to no frame. Each discarded line returns the Reader
+// to the clean message boundary — Dirty is false again and the padding
+// hook fires — so an idle stream after padding is an idle stream, not a
+// stalled frame. A run of padding is bounded on its own by
+// MaxMessageBytes and fails with ErrMessageTooLarge beyond it; the run
+// is never charged to the message that follows.
+//
+// Before the stream's first message nothing has been terminated, so a
+// blank line there is not padding and fails with ErrEmptyMessage.
+func (r *Reader) readStart() ([]byte, int, error) {
+	for {
+		line, raw, err := r.readLine(r.lim.MaxLineBytes, ErrLineTooLong)
+		if err != nil {
+			return nil, 0, err
+		}
+		if len(line) != 0 {
+			r.pad = 0
+			return line, raw, nil
+		}
+		if !r.afterMessage {
+			return nil, 0, ErrEmptyMessage
+		}
+		if err := charge(&r.pad, raw, r.lim.MaxMessageBytes, ErrMessageTooLarge); err != nil {
+			return nil, 0, err
+		}
+		r.dirty = false
+		if r.onPadding != nil {
+			r.onPadding()
+		}
+	}
+}
+
+// complete marks the frame boundary after a message's final line and
+// returns the message's fields.
+func (r *Reader) complete(m *msg) []Field {
+	r.dirty = false
+	r.afterMessage = true
+	return m.fields
 }
 
 // readLegacyCommand finishes a message whose first field was
@@ -191,8 +262,7 @@ func (r *Reader) readLegacyCommand(m *msg) ([]Field, error) {
 		if err := charge(&m.msgBytes, raw, r.lim.MaxMessageBytes, ErrMessageTooLarge); err != nil {
 			return nil, err
 		}
-		r.dirty = false
-		return m.fields, nil
+		return r.complete(m), nil
 	}
 }
 

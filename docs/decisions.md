@@ -1294,3 +1294,92 @@ implied here.
 Nothing in the module changes with the tag itself; the accompanying
 commit only rewords README and compatibility.md, which until now
 truthfully said that no release existed.
+
+## 2026-10-04 — Blank lines between messages are padding
+
+The parser no longer fails a stream over a blank line that follows a
+completed message. The public surface is unchanged.
+
+**The defect.** Asterisk's `PJSIPShowEndpoints` answers a system that has
+no endpoints with an error whose message literal already ends in a line
+feed (`No endpoints found\n`, verified in `res_pjsip` at the 20.4.0 tag;
+sibling replies in the same file share the shape). The manager then
+appends its own terminator, so the wire carries
+`Message: No endpoints found\n\r\n\r\n`. Bare `\n` is a line terminator
+here by design, so the message line ends at the `\n`, the first `\r\n`
+is the blank line that ends the response, and the response parses
+correctly — but the second `\r\n` is left on the stream. The next read
+met it where a message must start, returned `ErrEmptyMessage`, and the
+framing layer closed the connection. Any session that issued the action
+against such a system died immediately after receiving a perfectly
+readable answer.
+
+**The rule.** Once a message has completed, blank lines ahead of the next
+message's first field are inter-message padding and are discarded. A
+blank line inside a message still ends it; a malformed line behind
+padding is still a framing violation; and `ErrEmptyMessage` remains for
+the one position where a blank line cannot be a stray terminator — where
+the stream's *first* message must start, since nothing has been
+terminated yet. That position is read before or during authentication,
+and a peer that opens with a blank line is not speaking AMI. No recorded
+decision had to move: the old behavior was pinned only by one test row
+and the sentinel's comment, and that row — a blank line on a fresh
+stream — still holds.
+
+**Bounded by a byte ceiling, not by the partial-frame age.** The choice
+was between the two, and the age is the wrong instrument for a reason
+the observed traffic makes concrete: the stray line is followed by
+*silence* until the server next has something to say. The reader cannot
+tell padding from a frame at its first byte, so that byte starts the
+frame clock. Had padding simply counted as the opening of the next
+frame, every session idling behind it would have died 30 s later as a
+slow frame — the exact failure the age rule promises never to inflict on
+an idle healthy connection. So padding belongs to no frame: discarding a
+line returns the reader to a clean message boundary (`Dirty` is false
+again), and a new `wire.Reader` padding hook, the counterpart of the
+frame-start hook, lets the framing layer disarm the deadline the line
+armed. The wire package stays clock-free, a cancellation poke in flight
+still owns the deadline, and a read canceled behind padding abandons
+cleanly because no frame byte is pending.
+
+With the clock stopped, time no longer bounds padding, so bytes do: one
+run of padding may not exceed `MaxMessageBytes`. The limit policy picked
+the dimension. Every limit is explicit, so a hidden constant was out; a
+new `WireLimits` field would add public surface, a default, and a
+rationale for a dimension nobody has a reason to tune, because padding
+is discarded as it is read and retains nothing. Under
+headroom-over-strictness a generous ceiling is free here, and
+`MaxMessageBytes` already answers the question being asked — how many
+non-output bytes the stream may spend where one message is expected. A
+byte bound is also a line bound, since every blank line costs at least
+one raw byte. The run is counted on its own and resets when a message
+starts, rather than being charged to the message it precedes: padding
+must never decide whether a legitimate message parses, so a message at
+its exact byte limit still parses behind a run at its exact limit. A run
+one byte past the ceiling fails as `ProtocolError{limit,
+MaxMessageBytes}` and closes the connection, like every other inbound
+limit breach. What the age still covers is the partial line: a lone `\r`
+that never receives its `\n` is an incomplete frame and expires as one.
+
+**`amitest` inherits the rule.** The fake reads client actions through
+the same parser, so it now also discards blank lines between actions
+after a session's first. The library's own encoder cannot emit one, so
+no scenario changes; a blank line before a session's first action is
+still recorded as a wire violation.
+
+**Tests.** The wire tests read the observed byte sequence followed by a
+second message, coalesced and one byte per read, alongside bare-`\n` and
+mixed runs, padding on either side of a legacy command frame, trailing
+padding at a clean end of stream, the framing errors padding must not
+excuse, both exact-boundary cases of the run ceiling, and the hook
+pairing — every frame start is closed by a returned message or by a
+padding report. The fuzz corpus gained padding seeds, and the fuzz
+target now also asserts that a returned message or a clean end of stream
+leaves the reader at a boundary. At the framing layer a `synctest` case
+idles far past the age behind padding, cancels cleanly, and reads the
+next message; a second pins poke precedence; the violation table pins
+which blank lines still close the connection. The client-level
+regression scripts the same bytes through `amitest`'s `Call.Raw`, as one
+write and as byte-sized writes: `Do` and `StartList` both return the
+error response, and a `Ping` behind each proves the stray line was
+passed and the session is alive.

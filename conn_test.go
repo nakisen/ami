@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/nakisen/ami/internal/wire"
@@ -503,6 +504,51 @@ func TestFramerPartialFrameAgeIdleUnaffected(t *testing.T) {
 	}
 }
 
+// TestFramerPaddingLeavesStreamIdle pins why inter-message padding is
+// bounded by bytes and not by the partial-frame age. The observed shape
+// is a response, one stray blank line, then silence: the blank line's
+// first byte starts the frame clock, so discarding it must stop the
+// clock again, or the idle stream behind it dies as a slow frame.
+func TestFramerPaddingLeavesStreamIdle(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const age = time.Second
+		f, server := newPipeFramer(t, WireLimits{MaxPartialFrameAge: age})
+		// One chunk carries the response and the stray blank line behind it.
+		go server.Write([]byte("Response: Error\r\nActionID: 7\r\nMessage: No endpoints found\n\r\n\r\n"))
+		msg, err := f.readMessage(context.Background())
+		if err != nil || msg.Get("Response") != "Error" || msg.Get("Message") != "No endpoints found" {
+			t.Fatalf("readMessage() = (%v, %v), want the error response", msg, err)
+		}
+
+		// The next read discards the buffered blank line and then waits
+		// on the stream. Far past the age it must still be waiting.
+		ctx, cancel := context.WithCancel(context.Background())
+		resCh := make(chan error, 1)
+		go func() {
+			_, err := f.readMessage(ctx)
+			resCh <- err
+		}()
+		time.Sleep(10 * age)
+		synctest.Wait()
+		select {
+		case err := <-resCh:
+			t.Fatalf("idle readMessage() behind padding = %v, want it still waiting", err)
+		default:
+		}
+		// The wait holds no frame byte, so it abandons cleanly and the
+		// connection stays usable.
+		cancel()
+		if err := <-resCh; !errors.Is(err, context.Canceled) {
+			t.Fatalf("canceled readMessage() behind padding = %v, want context.Canceled", err)
+		}
+		go server.Write([]byte("Response: Success\r\nActionID: 8\r\nPing: Pong\r\n\r\n"))
+		msg, err = f.readMessage(context.Background())
+		if err != nil || msg.Get("ActionID") != "8" || msg.Get("Ping") != "Pong" {
+			t.Fatalf("readMessage() after padding = (%v, %v), want the Ping response", msg, err)
+		}
+	})
+}
+
 // deadlineRecorder records every SetReadDeadline value so tests can
 // assert exactly who owns the read deadline.
 type deadlineRecorder struct {
@@ -551,16 +597,66 @@ func TestFramerFrameStartYieldsToCancelPoke(t *testing.T) {
 	}
 }
 
-func TestFramerInboundViolationCloses(t *testing.T) {
-	f, server := newPipeFramer(t, WireLimits{MaxLineBytes: 8})
-	go server.Write([]byte("A: 123456789\r\n\r\n"))
-	_, err := f.readMessage(context.Background())
-	var pe *ProtocolError
-	if !errors.As(err, &pe) || pe.Category != "limit" || pe.Dimension != "MaxLineBytes" {
-		t.Fatalf("readMessage() = %v, want limit/MaxLineBytes", err)
+func TestFramerPaddingYieldsToCancelPoke(t *testing.T) {
+	rec := &deadlineRecorder{}
+	f := &framer{conn: rec, age: time.Minute}
+	f.frameStarted() // the padding's first byte arms the age deadline
+	f.framePadded()  // no poke in flight: the discard disarms it
+	f.readPoke()     // the cancellation poke takes ownership
+	f.framePadded()  // must not clear the poked deadline
+	got := rec.snapshot()
+	if len(got) != 3 {
+		t.Fatalf("SetReadDeadline calls = %d (%v), want 3: the poked discard must not set a deadline", len(got), got)
 	}
-	if _, err := f.readMessage(context.Background()); !errors.Is(err, ErrClosed) {
-		t.Fatalf("readMessage() after violation = %v, want ErrClosed", err)
+	if !got[0].After(time.Now().Add(30 * time.Second)) {
+		t.Fatalf("arming = %v, want the age in the future", got[0])
+	}
+	if !got[1].IsZero() {
+		t.Fatalf("discard set %v, want the zero time", got[1])
+	}
+	if !got[2].Equal(aLongTimeAgo) {
+		t.Fatalf("poke set %v, want the past instant", got[2])
+	}
+}
+
+func TestFramerInboundViolationCloses(t *testing.T) {
+	tests := []struct {
+		name      string
+		limits    WireLimits
+		in        string
+		delivered int // messages that parse before the violation
+		category  string
+		dimension string
+	}{
+		{"line limit", WireLimits{MaxLineBytes: 8}, "A: 123456789\r\n\r\n", 0, "limit", "MaxLineBytes"},
+		{"malformed line", WireLimits{}, "garbage\r\n\r\n", 0, "framing", "malformed line"},
+		{"blank line before the first message", WireLimits{}, "\r\nEvent: X\r\n\r\n", 0, "framing", "empty message"},
+		{"malformed line behind padding", WireLimits{}, "Event: X\r\n\r\n\r\ngarbage\r\n\r\n", 1, "framing", "malformed line"},
+		{
+			"padding run past the message byte limit",
+			WireLimits{MaxMessageBytes: 8},
+			"A: 1\r\n\r\n" + strings.Repeat("\r\n", 4) + "\n",
+			1, "limit", "MaxMessageBytes",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, server := newPipeFramer(t, tt.limits)
+			go server.Write([]byte(tt.in))
+			for i := range tt.delivered {
+				if _, err := f.readMessage(context.Background()); err != nil {
+					t.Fatalf("message %d before the violation: %v", i, err)
+				}
+			}
+			_, err := f.readMessage(context.Background())
+			var pe *ProtocolError
+			if !errors.As(err, &pe) || pe.Category != tt.category || pe.Dimension != tt.dimension {
+				t.Fatalf("readMessage() = %v, want %s/%s", err, tt.category, tt.dimension)
+			}
+			if _, err := f.readMessage(context.Background()); !errors.Is(err, ErrClosed) {
+				t.Fatalf("readMessage() after violation = %v, want ErrClosed", err)
+			}
+		})
 	}
 }
 

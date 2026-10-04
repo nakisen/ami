@@ -19,6 +19,12 @@
 //     field and byte limits, so command output has its own budget and
 //     cannot consume the bounds meant for ordinary messages.
 //
+// Blank lines between messages are inter-message padding: once a message
+// has completed, a blank line where the next one must start is discarded
+// instead of failing the stream, because some servers terminate a message
+// whose last value already ends in a line feed. Padding belongs to no
+// frame and each run of it is bounded by MaxMessageBytes.
+//
 // Envelope classification (Action, Response, Event), case-insensitive
 // lookup, and every session concern live in the root package. This
 // package must never import the root package; the root package converts
@@ -61,7 +67,8 @@ type Limits struct {
 
 	// MaxMessageBytes bounds the raw inbound bytes of one message outside
 	// command output: field lines, framing lines, and the terminating
-	// blank line, terminators included.
+	// blank line, terminators included. It separately bounds each run of
+	// inter-message padding, which is never charged to a message.
 	MaxMessageBytes int
 
 	// MaxCommandOutputLines bounds the command output lines of one
@@ -123,7 +130,8 @@ var (
 	ErrTooManyFields = errors.New("ami/wire: too many fields")
 
 	// ErrMessageTooLarge reports an inbound message exceeding
-	// MaxMessageBytes outside command output.
+	// MaxMessageBytes outside command output, or a run of inter-message
+	// padding exceeding the same bound.
 	ErrMessageTooLarge = errors.New("ami/wire: message too large")
 
 	// ErrTooManyOutputLines reports command output exceeding
@@ -138,8 +146,10 @@ var (
 	// key where a field is required.
 	ErrMalformedLine = errors.New("ami/wire: malformed line")
 
-	// ErrEmptyMessage reports a blank line where an inbound message must
-	// start, or an outbound message with no fields.
+	// ErrEmptyMessage reports a blank line where the stream's first
+	// inbound message must start — after a completed message a blank line
+	// is inter-message padding instead — or an outbound message with no
+	// fields.
 	ErrEmptyMessage = errors.New("ami/wire: empty message")
 
 	// ErrCommandFraming reports a legacy command frame whose

@@ -686,6 +686,56 @@ func TestRawMalformedFrameKillsClient(t *testing.T) {
 	// strict cleanup on srv asserts no violation was recorded.
 }
 
+// TestStrayBlankLineBehindErrorResponse scripts a server framing quirk
+// with synthetic bytes: an error response whose Message text already
+// ends in a line feed is followed by the server's own message
+// terminator, so one stray blank line trails the response. The error
+// must reach its caller as an ordinary error response and the session
+// must survive. Each Ping round trip proves the stray line was
+// discarded, because the reader has to pass it to reach the Ping
+// response.
+func TestStrayBlankLineBehindErrorResponse(t *testing.T) {
+	for name, chunk := range map[string]int{"one write": 0, "byte-sized writes": 1} {
+		t.Run(name, func(t *testing.T) {
+			srv := newServer(t, amitest.Config{WriteChunk: chunk})
+			srv.HandleAction("PJSIPShowEndpoints", func(call *amitest.Call) {
+				call.Raw([]byte("Response: Error\r\nActionID: " + call.ActionID() +
+					"\r\nMessage: No endpoints found\n\r\n\r\n"))
+			})
+			c := dialServer(t, srv, nil)
+
+			act, err := ami.NewAction("PJSIPShowEndpoints")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.Do(context.Background(), act)
+			var re *ami.ResponseError
+			if !errors.As(err, &re) {
+				t.Fatalf("Do(PJSIPShowEndpoints) = %v, want *ResponseError", err)
+			}
+			if got := re.Response().Get("Message"); got != "No endpoints found" {
+				t.Errorf("error response Message = %q, want %q", got, "No endpoints found")
+			}
+			if got := mustDo(t, c, "Ping").Get("Ping"); got != "Pong" {
+				t.Errorf("Ping behind the stray blank line answered %q, want Pong", got)
+			}
+
+			// The action is a list action in practice; a refused list
+			// start takes the same path and must leave the same session.
+			if _, err := c.StartList(context.Background(), act, ami.ListSpec{}); !errors.As(err, &re) {
+				t.Fatalf("StartList(PJSIPShowEndpoints) = %v, want *ResponseError", err)
+			}
+			mustDo(t, c, "Ping")
+
+			select {
+			case <-c.Done():
+				t.Fatalf("client terminated: %v", c.Err())
+			default:
+			}
+		})
+	}
+}
+
 func TestHangupAndReconnect(t *testing.T) {
 	srv := newServer(t, amitest.Config{})
 	c1 := dialServer(t, srv, nil)

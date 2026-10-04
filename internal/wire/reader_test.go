@@ -172,7 +172,7 @@ func TestReadMessageErrors(t *testing.T) {
 		wantErr error
 	}{
 		{"clean eof at boundary", "", io.EOF},
-		{"blank line at message start", "\r\nEvent: X\r\n\r\n", ErrEmptyMessage},
+		{"blank line before the first message", "\r\nEvent: X\r\n\r\n", ErrEmptyMessage},
 		{"first line without colon", "garbage\r\n\r\n", ErrMalformedLine},
 		{"empty key", ": value\r\n\r\n", ErrMalformedLine},
 		{"later line without colon", "Event: X\r\ngarbage\r\n\r\n", ErrMalformedLine},
@@ -201,6 +201,169 @@ func TestReadMessageSequence(t *testing.T) {
 	}
 	if _, err := r.ReadMessage(); err != io.EOF {
 		t.Fatalf("read past final message: err = %v, want io.EOF", err)
+	}
+}
+
+// strayTerminator is the framing quirk inter-message padding exists
+// for: the Message value already ends in a bare line feed, so the
+// server's own message terminator leaves one blank line behind the
+// response it just ended.
+const strayTerminator = "Response: Error\r\nActionID: 7\r\nMessage: No endpoints found\n\r\n\r\n"
+
+func TestReadMessagePadding(t *testing.T) {
+	one := []Field{{Key: "Event", Value: "One"}}
+	two := []Field{{Key: "Event", Value: "Two"}}
+	legacy := []Field{{Key: "Response", Value: "Follows"}, {Key: "Output", Value: "row"}}
+	tests := []struct {
+		name string
+		in   string
+		want [][]Field
+	}{
+		{
+			"stray terminator behind an error response",
+			strayTerminator + "Response: Success\r\nActionID: 8\r\nPing: Pong\r\n\r\n",
+			[][]Field{
+				{
+					{Key: "Response", Value: "Error"},
+					{Key: "ActionID", Value: "7"},
+					{Key: "Message", Value: "No endpoints found"},
+				},
+				{
+					{Key: "Response", Value: "Success"},
+					{Key: "ActionID", Value: "8"},
+					{Key: "Ping", Value: "Pong"},
+				},
+			},
+		},
+		{"bare lf padding", "Event: One\n\n\nEvent: Two\n\n", [][]Field{one, two}},
+		{"mixed run of padding", "Event: One\r\n\r\n\r\n\n\r\nEvent: Two\r\n\r\n", [][]Field{one, two}},
+		{"padding between every message", "Event: One\r\n\r\n\r\nEvent: Two\r\n\r\n\r\nEvent: One\r\n\r\n", [][]Field{one, two, one}},
+		{
+			"padding behind a legacy command frame",
+			"Response: Follows\r\nrow\n--END COMMAND--\r\n\r\n\r\nEvent: Two\r\n\r\n",
+			[][]Field{legacy, two},
+		},
+		{
+			"padding ahead of a legacy command frame",
+			"Event: One\r\n\r\n\r\nResponse: Follows\r\nrow\n--END COMMAND--\r\n\r\n",
+			[][]Field{one, legacy},
+		},
+		{"trailing padding at end of stream", "Event: One\r\n\r\n\r\n\n", [][]Field{one}},
+	}
+	transports := []struct {
+		name string
+		wrap func(io.Reader) io.Reader
+	}{
+		{"coalesced", func(r io.Reader) io.Reader { return r }},
+		{"one byte per read", iotest.OneByteReader},
+	}
+	for _, tt := range tests {
+		for _, tr := range transports {
+			t.Run(tt.name+"/"+tr.name, func(t *testing.T) {
+				r := NewReader(tr.wrap(strings.NewReader(tt.in)), testLimits())
+				for i, want := range tt.want {
+					got, err := r.ReadMessage()
+					if err != nil || !slices.Equal(got, want) {
+						t.Fatalf("message %d = (%v, %v), want (%v, nil)", i, got, err, want)
+					}
+				}
+				// Padding belongs to no frame: the stream ends cleanly at a
+				// message boundary however many blank lines trail it.
+				if _, err := r.ReadMessage(); err != io.EOF {
+					t.Fatalf("read past final message: err = %v, want io.EOF", err)
+				}
+				if r.Dirty() {
+					t.Fatal("discarded padding left the reader dirty")
+				}
+			})
+		}
+	}
+}
+
+// TestReadMessagePaddingKeepsFramingErrors pins what padding does not
+// excuse: after the first message parses, each stream must still fail
+// exactly as the same bytes would without the padding ahead of them.
+func TestReadMessagePaddingKeepsFramingErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		wantErr error
+	}{
+		{"line without colon after padding", "Event: One\r\n\r\n\r\ngarbage\r\n\r\n", ErrMalformedLine},
+		{"empty key after padding", "Event: One\r\n\r\n\r\n: value\r\n\r\n", ErrMalformedLine},
+		{"eof inside a padding line", "Event: One\r\n\r\n\r", io.ErrUnexpectedEOF},
+		{"eof inside the message after padding", "Event: One\r\n\r\n\r\nEvent: Two\r\n", io.ErrUnexpectedEOF},
+		{
+			"legacy terminator without its blank line after padding",
+			"Event: One\r\n\r\n\r\nResponse: Follows\r\n--END COMMAND--\r\nX: y\r\n\r\n",
+			ErrCommandFraming,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := newTestReader(tt.in, testLimits())
+			if _, err := r.ReadMessage(); err != nil {
+				t.Fatalf("first message: %v", err)
+			}
+			if _, err := r.ReadMessage(); !errors.Is(err, tt.wantErr) {
+				t.Fatalf("ReadMessage() error = %v, want %v", err, tt.wantErr)
+			}
+			if !r.Dirty() {
+				t.Fatal("clean after a frame failed partway")
+			}
+		})
+	}
+}
+
+// TestReadMessageBlankLineBeforeFirstMessage pins the case that stays
+// an empty message: nothing has been terminated yet, so a blank line
+// where the stream's first message must start is not padding.
+func TestReadMessageBlankLineBeforeFirstMessage(t *testing.T) {
+	r := newTestReader("Asterisk Call Manager/9.0.0\r\n\r\nEvent: X\r\n\r\n", testLimits())
+	if _, err := r.ReadBanner(); err != nil {
+		t.Fatalf("ReadBanner() error = %v", err)
+	}
+	if _, err := r.ReadMessage(); !errors.Is(err, ErrEmptyMessage) {
+		t.Fatalf("blank line right after the banner: err = %v, want ErrEmptyMessage", err)
+	}
+}
+
+func TestReadMessagePaddingLimit(t *testing.T) {
+	lim := testLimits()
+	lim.MaxMessageBytes = 8
+	const msg = "A: 1\r\n\r\n" // exactly 8 raw bytes: itself at the limit
+	want := []Field{{Key: "A", Value: "1"}}
+	tests := []struct {
+		name    string
+		padding string
+		wantErr error // nil means the run must be discarded
+	}{
+		{"crlf run at exact limit", strings.Repeat("\r\n", 4), nil},
+		{"crlf run one past limit", strings.Repeat("\r\n", 4) + "\n", ErrMessageTooLarge},
+		{"bare lf run at exact limit", strings.Repeat("\n", 8), nil},
+		{"bare lf run one past limit", strings.Repeat("\n", 9), ErrMessageTooLarge},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Two runs prove the budget is per run, and the exact-limit
+			// messages around them prove a run is never charged to the
+			// message it precedes.
+			r := newTestReader(msg+tt.padding+msg+tt.padding+msg, lim)
+			if got, err := r.ReadMessage(); err != nil || !slices.Equal(got, want) {
+				t.Fatalf("first message = (%v, %v)", got, err)
+			}
+			if tt.wantErr != nil {
+				if _, err := r.ReadMessage(); !errors.Is(err, tt.wantErr) {
+					t.Fatalf("ReadMessage() error = %v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			for i := 1; i <= 2; i++ {
+				if got, err := r.ReadMessage(); err != nil || !slices.Equal(got, want) {
+					t.Fatalf("message %d after padding = (%v, %v), want (%v, nil)", i, got, err, want)
+				}
+			}
+		})
 	}
 }
 
@@ -564,5 +727,36 @@ func TestReaderFrameStartHook(t *testing.T) {
 	}
 	if _, err := r.ReadMessage(); err != nil || fires != 3 {
 		t.Fatalf("after second message: fires = %d, err = %v, want exactly 3", fires, err)
+	}
+}
+
+// TestReaderPaddingHook pins the pairing the connection layer's
+// deadline relies on: every frame start is closed either by a returned
+// message or by a padding report, and the padding report finds the
+// reader clean.
+func TestReaderPaddingHook(t *testing.T) {
+	r := newTestReader("Event: A\r\n\r\n\r\n\nEvent: B\r\n\r\n", testLimits())
+	var trace []string
+	r.SetFrameStartHook(func() { trace = append(trace, "start") })
+	r.SetPaddingHook(func() {
+		if r.Dirty() {
+			t.Error("padding hook fired on a dirty reader")
+		}
+		trace = append(trace, "padding")
+	})
+	if _, err := r.ReadMessage(); err != nil {
+		t.Fatalf("first message: %v", err)
+	}
+	if want := []string{"start"}; !slices.Equal(trace, want) {
+		t.Fatalf("after first message: trace = %v, want %v", trace, want)
+	}
+	// Both blank lines are already buffered; each one starts a frame
+	// that turns out to be padding before the real frame starts.
+	if _, err := r.ReadMessage(); err != nil {
+		t.Fatalf("second message: %v", err)
+	}
+	want := []string{"start", "start", "padding", "start", "padding", "start"}
+	if !slices.Equal(trace, want) {
+		t.Fatalf("after second message: trace = %v, want %v", trace, want)
 	}
 }

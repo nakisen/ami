@@ -2,6 +2,7 @@ package wire
 
 import (
 	"bytes"
+	"io"
 	"slices"
 	"strings"
 	"testing"
@@ -11,7 +12,9 @@ import (
 // the parser must terminate without panicking, and every successfully
 // parsed message must uphold the field invariants: at least one field,
 // non-empty keys, no colon or line feed inside a key, and no line feed
-// inside a value.
+// inside a value. A returned message, or a clean end of stream, must
+// also leave the reader at a message boundary — discarded inter-message
+// padding included.
 func FuzzReadMessage(f *testing.F) {
 	seeds := []string{
 		"Event: Newchannel\r\nChannel: PJSIP/synthetic-0001\r\nVariable: a=1\r\nVariable: b=2\r\n\r\n",
@@ -26,6 +29,11 @@ func FuzzReadMessage(f *testing.F) {
 		": empty key\r\n\r\n",
 		"no colon at all\r\n\r\n",
 		"\r\n",
+		strayTerminator + "Response: Success\r\nActionID: 8\r\nPing: Pong\r\n\r\n",
+		"Event: One\r\n\r\n\r\n\n\r\nEvent: Two\r\n\r\n",
+		"Event: One\r\n\r\n\r\nno colon after padding\r\n\r\n",
+		"Event: One\r\n\r\n\r",
+		"Event: One\n\n" + strings.Repeat("\n", 5000),
 		"Event: truncated",
 		"Bin: \xff\xfe\x00\x1b\r\n\r\n",
 		strings.Repeat("A", 300) + ": long line\r\n\r\n",
@@ -39,7 +47,13 @@ func FuzzReadMessage(f *testing.F) {
 		for {
 			fields, err := r.ReadMessage()
 			if err != nil {
+				if err == io.EOF && r.Dirty() {
+					t.Fatal("clean end of stream left the reader dirty")
+				}
 				return // any terminating error is acceptable; panics and hangs are not
+			}
+			if r.Dirty() {
+				t.Fatalf("reader dirty after returning %v", fields)
 			}
 			if len(fields) == 0 {
 				t.Fatal("successful read returned no fields")

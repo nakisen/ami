@@ -107,7 +107,11 @@ implementation; the key evidence is kept here as rationale anchors.
   `readperm` mask, motivating the events-off default; the `Command` action
   switched to `Output:` framing in Asterisk 14.2 (AMI 3.1.0) while
   `--END COMMAND--` framing survives only in older releases, so both
-  framings stay supported.
+  framings stay supported; some error replies pass a message literal that
+  already ends in `\n` (`PJSIPShowEndpoints` answers
+  `No endpoints found\n` on a system without endpoints, Asterisk 20.4),
+  so the manager's own terminator leaves a stray blank line behind the
+  response, motivating inter-message padding.
 
 ## Architecture
 
@@ -202,6 +206,22 @@ which keeps framing directly testable from inside the package.
   reports `ErrClosed` under the already-closed disposition.
 - A protocol or inbound-limit violation closes the connection because
   subsequent framing cannot be trusted.
+- Blank lines between messages are inter-message padding, not a
+  violation. Once a message has completed, a blank line where the next
+  message must start is discarded, so a response trailed by a stray
+  terminator is delivered and the session survives it. Everything else
+  keeps its meaning: a blank line inside a message still ends it, a
+  malformed line behind padding is still a framing violation, and a blank
+  line before the stream's first message — nothing has been terminated
+  yet, so it is not padding — is still an empty message.
+- Padding belongs to no frame. Discarding it returns the stream to a
+  clean message boundary: the partial-frame clock its first byte started
+  stops again, and a read canceled there abandons cleanly. Its bound is
+  therefore a byte ceiling, not the age: the observed shape is padding
+  followed by silence, which an age rule would misread as a slow frame.
+  Each run of padding is bounded on its own by `MaxMessageBytes` — never
+  charged to the message it precedes — and a longer run is the same limit
+  violation an oversized message is.
 - An optional partial-frame age bounds the wall-clock life of one inbound
   frame: the deadline arms when the frame's first byte is consumed and
   clears when the frame completes, so an idle healthy connection never
@@ -734,9 +754,12 @@ validated and copied at their own registration/admission point before any
 retained state or wire I/O is committed. Required dimensions include:
 
 - banner bytes;
-- inbound line bytes, fields per message, and message bytes;
+- inbound line bytes, fields per message, and message bytes — the
+  message-byte ceiling also bounds, separately, each run of inter-message
+  padding;
 - partial-frame age after the first byte, without treating an idle healthy
-  connection as a slow frame;
+  connection — one idling behind discarded padding included — as a slow
+  frame;
 - `Command` output lines and bytes;
 - outbound field count, line bytes, and action bytes;
 - outbound writer admission and write-attempt duration;
@@ -961,7 +984,9 @@ Required concurrency and lifecycle cases include:
 
 - fragmented/coalesced framing (including one read returning a full
   message plus the start of the next), repeated fields, bare-`\n` line
-  terminators, header names containing digits, unexpected-case envelope
+  terminators, inter-message padding (a stray blank line behind a
+  message, coalesced and fragmented, followed by silence or by the next
+  message), header names containing digits, unexpected-case envelope
   fields, non-UTF-8 bytes, legacy/modern Command output, and partial-write
   propagation;
 - an immediate response arriving before the sending goroutine resumes;

@@ -50,7 +50,9 @@ var aLongTimeAgo = time.Unix(1, 0)
 // inbound violation: the read fails with a *ProtocolError and the
 // connection closes. The age clock starts when the frame's first byte is
 // consumed and stops when the frame completes, so an idle connection
-// with no pending frame never trips it.
+// with no pending frame never trips it. A blank line between messages is
+// padding, not a frame: discarding it stops the clock again, and the
+// volume of padding is bounded by WireLimits.MaxMessageBytes instead.
 //
 // The one exception is outbound validation: a *ProtocolError from
 // writeAction is reported before any byte is written and leaves the
@@ -85,6 +87,7 @@ func newFramer(conn net.Conn, limits WireLimits) (*framer, error) {
 	}
 	f := &framer{conn: conn, r: wire.NewReader(conn, lim), lim: lim, age: age}
 	f.r.SetFrameStartHook(f.frameStarted)
+	f.r.SetPaddingHook(f.framePadded)
 	return f, nil
 }
 
@@ -327,6 +330,20 @@ func (f *framer) frameStarted() {
 		return
 	}
 	f.conn.SetReadDeadline(time.Now().Add(f.age))
+}
+
+// framePadded disarms the partial-frame deadline after the reader
+// discarded inter-message padding: the frame those bytes started never
+// materialized, and the stream is idle at a message boundary again. A
+// cancellation poke in flight wins: the poked deadline must not be
+// cleared.
+func (f *framer) framePadded() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rdPoked || f.closed {
+		return
+	}
+	f.conn.SetReadDeadline(time.Time{})
 }
 
 // writePoke and writeClear interrupt and restore the write deadline;

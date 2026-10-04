@@ -56,8 +56,10 @@ type WireLimits struct {
 	MaxFields int
 
 	// MaxMessageBytes bounds one inbound message outside command output:
-	// field lines, framing lines, and the terminating blank line.
-	// Default 131072 (128 KiB).
+	// field lines, framing lines, and the terminating blank line. The
+	// same ceiling separately bounds each run of blank lines between two
+	// messages, which the reader discards as padding and never charges
+	// to a message. Default 131072 (128 KiB).
 	MaxMessageBytes int
 
 	// MaxCommandOutputLines bounds the command output lines of one
