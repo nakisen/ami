@@ -508,43 +508,116 @@ func TestFramerPartialFrameAgeIdleUnaffected(t *testing.T) {
 // bounded by bytes and not by the partial-frame age. The observed shape
 // is a response, one stray blank line, then silence: the blank line's
 // first byte starts the frame clock, so discarding it must stop the
-// clock again, or the idle stream behind it dies as a slow frame.
+// clock again, or the idle stream behind it dies as a slow frame. The
+// clock starts on two paths — at the read's entry for a byte already
+// buffered behind the response, and below the buffered reader for a
+// byte the transport delivers to a read already waiting — and the
+// discard must stop it on both.
 func TestFramerPaddingLeavesStreamIdle(t *testing.T) {
+	const response = "Response: Error\r\nActionID: 7\r\nMessage: No endpoints found\n\r\n"
+	tests := []struct {
+		name  string
+		first string // one transport read: the response and what trails it
+		later string // delivered on its own to the read that follows
+	}{
+		{"padding buffered behind the response", response + "\r\n", ""},
+		{"padding in a transport read of its own", response, "\r\n"},
+		{"padding line split across transport reads", response + "\r", "\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				const age = time.Second
+				f, server := newPipeFramer(t, WireLimits{MaxPartialFrameAge: age})
+				go server.Write([]byte(tt.first))
+				msg, err := f.readMessage(context.Background())
+				if err != nil || msg.Get("Response") != "Error" || msg.Get("Message") != "No endpoints found" {
+					t.Fatalf("readMessage() = (%v, %v), want the error response", msg, err)
+				}
+
+				// The next read discards the blank line and then waits on
+				// the stream. Far past the age it must still be waiting.
+				ctx, cancel := context.WithCancel(context.Background())
+				resCh := make(chan error, 1)
+				go func() {
+					_, err := f.readMessage(ctx)
+					resCh <- err
+				}()
+				if tt.later != "" {
+					// The read is blocked on the stream by now, so these
+					// bytes reach it straight from the transport.
+					synctest.Wait()
+					if _, err := server.Write([]byte(tt.later)); err != nil {
+						t.Fatalf("writing the trailing bytes: %v", err)
+					}
+				}
+				time.Sleep(10 * age)
+				synctest.Wait()
+				select {
+				case err := <-resCh:
+					t.Fatalf("idle readMessage() behind padding = %v, want it still waiting", err)
+				default:
+				}
+				// The wait holds no frame byte, so it abandons cleanly and
+				// the connection stays usable.
+				cancel()
+				if err := <-resCh; !errors.Is(err, context.Canceled) {
+					t.Fatalf("canceled readMessage() behind padding = %v, want context.Canceled", err)
+				}
+				go server.Write([]byte("Response: Success\r\nActionID: 8\r\nPing: Pong\r\n\r\n"))
+				msg, err = f.readMessage(context.Background())
+				if err != nil || msg.Get("ActionID") != "8" || msg.Get("Ping") != "Pong" {
+					t.Fatalf("readMessage() after padding = (%v, %v), want the Ping response", msg, err)
+				}
+			})
+		})
+	}
+}
+
+// TestFramerUnterminatedPaddingLineExpires pins what the age still
+// covers behind a completed message: a carriage return that never
+// receives its line feed is not padding but an incomplete line, so it
+// is a partial frame and expires as one — at the age, not a tick
+// before it.
+func TestFramerUnterminatedPaddingLineExpires(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const age = time.Second
 		f, server := newPipeFramer(t, WireLimits{MaxPartialFrameAge: age})
-		// One chunk carries the response and the stray blank line behind it.
-		go server.Write([]byte("Response: Error\r\nActionID: 7\r\nMessage: No endpoints found\n\r\n\r\n"))
-		msg, err := f.readMessage(context.Background())
-		if err != nil || msg.Get("Response") != "Error" || msg.Get("Message") != "No endpoints found" {
-			t.Fatalf("readMessage() = (%v, %v), want the error response", msg, err)
+		go server.Write([]byte("Response: Error\r\nActionID: 7\r\nMessage: No endpoints found\n\r\n"))
+		if _, err := f.readMessage(context.Background()); err != nil {
+			t.Fatalf("readMessage() error = %v", err)
 		}
-
-		// The next read discards the buffered blank line and then waits
-		// on the stream. Far past the age it must still be waiting.
-		ctx, cancel := context.WithCancel(context.Background())
 		resCh := make(chan error, 1)
 		go func() {
-			_, err := f.readMessage(ctx)
+			_, err := f.readMessage(context.Background())
 			resCh <- err
 		}()
-		time.Sleep(10 * age)
+		synctest.Wait()
+		// A pipe write completes only when fully consumed, so the frame
+		// clock starts in the same instant Write returns.
+		if _, err := server.Write([]byte("\r")); err != nil {
+			t.Fatalf("writing the lone carriage return: %v", err)
+		}
+		time.Sleep(age - time.Nanosecond)
 		synctest.Wait()
 		select {
 		case err := <-resCh:
-			t.Fatalf("idle readMessage() behind padding = %v, want it still waiting", err)
+			t.Fatalf("readMessage() one tick before the age = %v, want it still waiting", err)
 		default:
 		}
-		// The wait holds no frame byte, so it abandons cleanly and the
-		// connection stays usable.
-		cancel()
-		if err := <-resCh; !errors.Is(err, context.Canceled) {
-			t.Fatalf("canceled readMessage() behind padding = %v, want context.Canceled", err)
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		select {
+		case err := <-resCh:
+			var pe *ProtocolError
+			if !errors.As(err, &pe) || pe.Category != "limit" || pe.Dimension != "MaxPartialFrameAge" {
+				t.Fatalf("readMessage() at the age = %v, want limit/MaxPartialFrameAge", err)
+			}
+		default:
+			t.Fatal("readMessage() still waiting at the age, want the partial frame expired")
 		}
-		go server.Write([]byte("Response: Success\r\nActionID: 8\r\nPing: Pong\r\n\r\n"))
-		msg, err = f.readMessage(context.Background())
-		if err != nil || msg.Get("ActionID") != "8" || msg.Get("Ping") != "Pong" {
-			t.Fatalf("readMessage() after padding = (%v, %v), want the Ping response", msg, err)
+		if _, err := f.readMessage(context.Background()); !errors.Is(err, ErrClosed) {
+			t.Fatalf("readMessage() after expiry = %v, want ErrClosed", err)
 		}
 	})
 }

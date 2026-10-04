@@ -186,6 +186,7 @@ func (r *Reader) readStart() ([]byte, int, error) {
 			return nil, 0, err
 		}
 		if len(line) != 0 {
+			// The only reset, on purpose: a run spans reads canceled behind padding.
 			r.pad = 0
 			return line, raw, nil
 		}
