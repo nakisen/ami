@@ -1383,3 +1383,26 @@ regression scripts the same bytes through `amitest`'s `Call.Raw`, as one
 write and as byte-sized writes: `Do` and `StartList` both return the
 error response, and a `Ping` behind each proves the stray line was
 passed and the session is alive.
+
+## 2026-10-04 — v0.1.1: the first patch release
+
+v0.1.1 is cut from `main` once the inter-message padding fix has landed
+there. It carries that fix and nothing else: the change recorded in the
+previous section, plus a follow-up that closes two gaps an independent
+review found in its tests — padding that arrives in a transport read of
+its own, and a carriage return that never receives its line feed
+expiring at the partial-frame age exactly.
+
+It is a patch release because the API is unchanged and nothing that
+worked before means something different now. The only behavior that
+moved is a stream that used to end the session and is now survived, and
+a consumer pinned to v0.1.0 needs exactly that without taking anything
+else. `MaxMessageBytes` gained a second role rather than the limits a new
+dimension, so no configuration written against v0.1.0 changes meaning.
+
+What a patch tag means from here on is equally narrow: fixes only, the
+API as the last minor release left it, cut from `main` with its history
+kept linear. The tag itself stays an explicit maintainer decision each
+time, as the first one was. Nothing in the module changes with the tag;
+the accompanying commit only adds the patch-release sentence to
+compatibility.md and this entry.

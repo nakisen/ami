@@ -10,8 +10,9 @@ itself supports only the two most recent releases).
 
 Current state: `go 1.27` (Go 1.27 is stable as of August 2026).
 Releases are semver v0.x tags cut from `main` — v0.1.0 is the first.
-Under semver v0 rules the API may change between minor versions;
-compatibility promises begin at v1.0.0.
+Patch releases (v0.x.y, starting with v0.1.1) carry fixes only and leave
+the API unchanged. Under semver v0 rules the API may change between minor
+versions; compatibility promises begin at v1.0.0.
 
 ## Asterisk / AMI versions
 
